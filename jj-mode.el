@@ -47,6 +47,9 @@
     (define-key map (kbd "V") 'jj-revert-file)
     (define-key map (kbd "E") 'jj-diffedit-emacs)
     (define-key map (kbd "M") 'jj-diffedit-smerge)
+    (define-key map (kbd "u") 'jj-undo)
+    (define-key map (kbd "N") 'jj-new)
+    (define-key map (kbd ".") 'jj-goto-current)
     map)
   "Keymap for `jj-mode'.")
 
@@ -614,6 +617,43 @@
         (view-mode)))
     (display-buffer buffer)))
 
+(defun jj-undo ()
+  "Undo the last change."
+  (interactive)
+  (let ((commit-id (jj-get-changeset-at-point)))
+    (jj--run-command "undo")
+    (jj-log-refresh)
+    (when commit-id
+      (jj-goto-commit commit-id))))
+
+(defun jj-new ()
+  "Create a new changeset."
+  (interactive)
+  (if-let ((commit-id (jj-get-changeset-at-point)))
+      (progn
+        (jj--run-command "new" "-r" commit-id)
+        (jj-log-refresh)
+        (jj-goto-commit commit-id))
+    (message "Can only run new on a change")))
+
+(defun jj-goto-current ()
+  "Jump to the current changeset (@)."
+  (interactive)
+  (goto-char (point-min))
+  (if (re-search-forward "^.*@.*$" nil t)
+      (goto-char (line-beginning-position))
+    (message "Current changeset (@) not found")))
+
+(defun jj-goto-commit (commit-id)
+  "Jump to a specific COMMIT-ID in the log."
+  (interactive "sCommit ID: ")
+  (let ((start-pos (point)))
+    (goto-char (point-min))
+    (if (re-search-forward (regexp-quote commit-id) nil t)
+        (goto-char (line-beginning-position))
+      (goto-char start-pos)
+      (message "Commit %s not found" commit-id))))
+
 (defun jj-git-push ()
   "Push to git remote."
   (interactive)
@@ -837,10 +877,19 @@
 (defun jj-rebase-transient ()
   "Transient for jj rebase operations."
   (interactive)
+  ;; Add cleanup hook for when transient exits
+  (add-hook 'transient-exit-hook 'jj-rebase-cleanup-on-exit nil t)
   (jj-rebase-transient--internal))
+
+(defun jj-rebase-cleanup-on-exit ()
+  "Clean up rebase selections when transient exits."
+  (jj-rebase-clear-selections)
+  (remove-hook 'transient-exit-hook 'jj-rebase-cleanup-on-exit t))
 
 (transient-define-prefix jj-rebase-transient--internal ()
   "Internal transient for jj rebase operations."
+  :transient-suffix 'transient--do-exit
+  :transient-non-suffix 'transient--do-warn
   [:description
    (lambda ()
      (concat "JJ Rebase"
@@ -866,7 +915,6 @@
      :transient t)]
    ["Actions"
     ("r" "Execute rebase" jj-rebase-execute
-     :if (lambda () (and jj-rebase-source jj-rebase-destinations))
      :description (lambda ()
                     (if (and jj-rebase-source jj-rebase-destinations)
                         (format "Rebase %s -> %s"
