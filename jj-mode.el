@@ -18,11 +18,14 @@
   :type 'integer
   :group 'jj)
 
+;; (setq jj-mode-map nil)
+
 (defvar jj-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") 'jj-enter-dwim)
     (define-key map (kbd "TAB") 'magit-section-toggle)
     (define-key map (kbd "g") 'jj-log-refresh)
+    (define-key map (kbd "G") 'jj-git-transient)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "n") 'magit-section-forward)
     (define-key map (kbd "p") 'magit-section-backward)
@@ -35,8 +38,8 @@
     (define-key map (kbd "e") 'jj-edit-commit)
     (define-key map (kbd "s") 'jj-squash)
     (define-key map (kbd "S") 'jj-split)
-    (define-key map (kbd "b") 'jj-branch-create)
-    (define-key map (kbd "B") 'jj-branch-list)
+    (define-key map (kbd "b") 'jj-bookmark-transient)
+    (define-key map (kbd "B") 'jj-bookmark-list)
     (define-key map (kbd "P") 'jj-git-push)
     (define-key map (kbd "F") 'jj-git-fetch)
     (define-key map (kbd "r") 'jj-rebase-transient)
@@ -91,7 +94,7 @@
    (author :initarg :author)
    (date :initarg :date)
    (description :initarg :description)
-   (branches :initarg :branches)))
+   (bookmarks :initarg :bookmarks)))
 
 (defclass jj-commits-section (magit-section) ())
 (defclass jj-status-section (magit-section) ())
@@ -100,7 +103,7 @@
 (defclass jj-log-entry-section (magit-section)
   ((commit-id :initarg :commit-id)
    (description :initarg :description)
-   (branches :initarg :branches)))
+   (bookmarks :initarg :bookmarks)))
 (defclass jj-diff-section (magit-section) ())
 (defclass jj-file-section (magit-section)
   ((file :initarg :file)))
@@ -115,21 +118,21 @@
     (let* ((id (match-string 1 line))
            (info (match-string 2 line))
            (desc (match-string 3 line))
-           (branches (when (string-match "\\(([^)]+)\\)" info)
-                       (match-string 1 info)))
+           (bookmarks (when (string-match "\\(([^)]+)\\)" info)
+                        (match-string 1 info)))
            (author-date (replace-regexp-in-string "\\s-*([^)]+)\\s-*" "" info)))
       (list :id id
             :info info
             :author-date author-date
             :description desc
-            :branches branches))))
+            :bookmarks bookmarks))))
 
 (defun jj-log-insert-commits ()
   "Insert jj log commits into current buffer."
   (let* ((log-output (jj--run-command "log" 
                                       "--no-graph"
                                       "-r" (format "ancestors(@, %d)" jj-log-limit)
-                                      "--template" "change_id.shortest() ++ \" \" ++ if(branches, branches.join(\", \") ++ \" \", \"\") ++ author.name() ++ \" \" ++ author.timestamp().ago() ++ \" | \" ++ if(description, description.first_line(), \"(no description)\")"))
+                                      "--template" "change_id.shortest() ++ \" \" ++ if(bookmarks, bookmarks.join(\", \") ++ \" \", \"\") ++ author.name() ++ \" \" ++ author.timestamp().ago() ++ \" | \" ++ if(description, description.first_line(), \"(no description)\")"))
          (lines (split-string log-output "\n" t)))
     (when lines
       (magit-insert-section (jj-commits-section)
@@ -141,9 +144,9 @@
                                   (oset section description (plist-get commit-data :description))
                                   (insert (propertize (format "%-8s" (plist-get commit-data :id))
                                                       'face 'magit-hash))
-                                  (when (plist-get commit-data :branches)
-                                    (insert (propertize (plist-get commit-data :branches)
-                                                        'face 'magit-branch-local) " "))
+                                  (when (plist-get commit-data :bookmarks)
+                                    (insert (propertize (plist-get commit-data :bookmarks)
+                                                        'face 'magit-bookmark-local) " "))
                                   (insert (propertize (plist-get commit-data :author-date)
                                                       'face 'magit-log-author))
                                   (insert " ")
@@ -158,20 +161,20 @@
     (let* ((marker (match-string 1 line))
            (id (match-string 2 line))
            (rest (substring line (match-end 0)))
-           branches description)
-      ;; Extract branches and description from the rest of the line
+           bookmarks description)
+      ;; Extract bookmarks and description from the rest of the line
       (when (string-match "\\s-+\\(.*\\)" rest)
         (setq description (match-string 1 rest)))
-      ;; Check if there are branch names at the beginning
+      ;; Check if there are bookmark names at the beginning
       (when (and description (string-match "^\\(\\S-+\\)\\s-+\\(.*\\)" description))
         (let ((first-word (match-string 1 description)))
           (when (not (string-match "^[0-9]" first-word))
-            (setq branches first-word
+            (setq bookmarks first-word
                   description (match-string 2 description)))))
       (when id
         (list :marker marker
               :id id
-              :branches branches
+              :bookmarks bookmarks
               :description description
               :full-line line)))))
 
@@ -188,7 +191,7 @@
                 (magit-insert-section section (jj-log-entry-section)
                                       (oset section commit-id (plist-get changeset-data :id))
                                       (oset section description (plist-get changeset-data :description))
-                                      (oset section branches (plist-get changeset-data :branches))
+                                      (oset section bookmarks (plist-get changeset-data :bookmarks))
                                       (insert line "\n"))
               ;; This is a graph line or other content
               (insert line "\n"))))
@@ -604,24 +607,119 @@
     (jj-log-refresh)
     (message "Split current commit")))
 
-(defun jj-branch-create ()
-  "Create a new branch."
+(defun jj-bookmark-create ()
+  "Create a new bookmark."
   (interactive)
-  (let ((name (read-string "Branch name: ")))
-    (jj--run-command "branch" "create" name)
-    (jj-log-refresh)))
+  (let* ((commit-id (or (jj-get-changeset-at-point) "@"))
+         (name (read-string "Bookmark name: ")))
+    (unless (string-empty-p name)
+      (jj--run-command "bookmark" "create" name "-r" commit-id)
+      (jj-log-refresh)
+      (message "Created bookmark '%s' at %s" name commit-id))))
 
-(defun jj-branch-list ()
-  "List branches."
+(defun jj-bookmark-list ()
+  "List bookmarks."
   (interactive)
-  (let ((buffer (get-buffer-create "*jj-branches*")))
+  (let ((buffer (get-buffer-create "*jj-bookmarks*")))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert (jj--run-command-color "branch" "list"))
+        (insert (jj--run-command-color "bookmark" "list"))
         (goto-char (point-min))
         (view-mode)))
     (display-buffer buffer)))
+
+(defun jj-bookmark-abandon ()
+  "Abandon a bookmark."
+  (interactive)
+  (let* ((bookmarks-output (jj--run-command "bookmark" "list"))
+         (bookmarks (seq-filter 
+                     (lambda (line) (not (string-empty-p line)))
+                     (split-string bookmarks-output "\n")))
+         (bookmark-names (mapcar
+                          (lambda (line)
+                            (when (string-match "^\\([^:]+\\)" line)
+                              (match-string 1 line)))
+                          bookmarks))
+         (bookmark-names (seq-filter 'identity bookmark-names)))
+    (if bookmark-names
+        (let ((choice (completing-read "Abandon bookmark (deletes on remote): " bookmark-names)))
+          (when choice
+            (jj--run-command "bookmark" "delete" choice)
+            (jj-log-refresh)
+            (message "Abandoned bookmark '%s'" choice)))
+      (message "No bookmarks found"))))
+
+(defun jj-bookmark-forget ()
+  "Forget a bookmark."
+  (interactive)
+  (let* ((bookmarks-output (jj--run-command "bookmark" "list"))
+         (bookmarks (seq-filter 
+                     (lambda (line) (not (string-empty-p line)))
+                     (split-string bookmarks-output "\n")))
+         (bookmark-names (mapcar
+                          (lambda (line)
+                            (when (string-match "^\\([^:]+\\)" line)
+                              (match-string 1 line)))
+                          bookmarks))
+         (bookmark-names (seq-filter 'identity bookmark-names)))
+    (if bookmark-names
+        (let ((choice (completing-read "Forget bookmark: " bookmark-names)))
+          (when choice
+            (jj--run-command "bookmark" "forget" choice)
+            (jj-log-refresh)
+            (message "Forgot bookmark '%s'" choice)))
+      (message "No bookmarks found"))))
+
+(defun jj-bookmark-track ()
+  "Track a remote bookmark."
+  (interactive)
+  (let* ((remotes-output (jj--run-command "bookmark" "list" "--all"))
+         (remote-lines (seq-filter 
+                        (lambda (line) (string-match "@" line))
+                        (split-string remotes-output "\n")))
+         (remote-bookmarks (mapcar
+                            (lambda (line)
+                              (when (string-match "^\\([^:]+\\)" line)
+                                (match-string 1 line)))
+                            remote-lines))
+         (remote-bookmarks (seq-filter 'identity remote-bookmarks)))
+    (if remote-bookmarks
+        (let ((choice (completing-read "Track remote bookmark: " remote-bookmarks)))
+          (when choice
+            (jj--run-command "bookmark" "track" choice)
+            (jj-log-refresh)
+            (message "Tracking bookmark '%s'" choice)))
+      (message "No remote bookmarks found"))))
+
+(defun jj-tug ()
+  "Run jj tug command."
+  (interactive)
+  (let ((result (jj--run-command "tug")))
+    (jj-log-refresh)
+    (message "Tug completed: %s" (string-trim result))))
+
+;; Bookmark transient menu
+;;;###autoload
+(defun jj-bookmark-transient ()
+  "Transient for jj bookmark operations."
+  (interactive)
+  (jj-bookmark-transient--internal))
+
+(transient-define-prefix jj-bookmark-transient--internal ()
+  "Internal transient for jj bookmark operations."
+  ["Bookmark Operations"
+   [("t" "Tug" jj-tug
+     :description "Run jj tug command")
+    ("c" "Create bookmark" jj-bookmark-create
+     :description "Create new bookmark")
+    ("T" "Track remote" jj-bookmark-track
+     :description "Track remote bookmark")]
+   [("a" "Abandon bookmark" jj-bookmark-abandon
+     :description "Delete local bookmark")
+    ("f" "Forget bookmark" jj-bookmark-forget
+     :description "Forget bookmark")]
+   [("q" "Quit" transient-quit-one)]])
 
 (defun jj-undo ()
   "Undo the last change."
@@ -660,13 +758,19 @@
       (goto-char start-pos)
       (message "Commit %s not found" commit-id))))
 
-(defun jj-git-push ()
-  "Push to git remote."
-  (interactive)
-  (let ((branch (read-string "Push branch (empty for current): ")))
-    (if (string-empty-p branch)
-        (jj--run-command "git" "push")
-      (jj--run-command "git" "push" "--branch" branch)))
+(defun jj-git-push (args)
+  "Push to git remote with ARGS."
+  (interactive (list (transient-args 'jj-git-transient)))
+  (let* ((allow-new (member "--allow-new" args))
+         (bookmark-arg (seq-find (lambda (arg) (string-prefix-p "--bookmark=" arg)) args))
+         (bookmark (when bookmark-arg (substring bookmark-arg 11))))
+    (if bookmark
+        (if allow-new
+            (jj--run-command "git" "push" "--allow-new" "--bookmark" bookmark)
+          (jj--run-command "git" "push" "--bookmark" bookmark))
+      (if allow-new
+          (jj--run-command "git" "push" "--allow-new")
+        (jj--run-command "git" "push"))))
   (jj-log-refresh))
 
 (defun jj-commit ()
@@ -1015,5 +1119,21 @@
     ("p" "Prev" jj-goto-prev-changeset
      :transient t)
     ("q" "Quit" transient-quit-one)]])
+
+(transient-define-prefix jj-git-transient ()
+  "Transient for jj git operations."
+  :transient-suffix 'transient--do-exit
+  :transient-non-suffix 'transient--do-warn
+  ["Arguments"
+   ("-n" "Allow new branches" "--allow-new")
+   ("-b" "Bookmark" "--bookmark=" :reader transient-read-string)]
+  [:description "JJ Git Operations"
+   :class transient-columns
+   ["Actions"
+    ("p" "Push" jj-git-push
+     :transient nil)
+    ("f" "Fetch" jj-git-fetch
+     :transient nil)]
+   [("q" "Quit" transient-quit-one)]])
 
 (provide 'jj-mode)
