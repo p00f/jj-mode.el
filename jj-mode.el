@@ -301,9 +301,12 @@
 (defun jj-log ()
   "Display jj log in a magit-style buffer."
   (interactive)
-  (let ((buffer (get-buffer-create "*jj-log*")))
+  (let* ((repo-root (or (magit-toplevel) default-directory))
+         (buffer-name (format "*jj-log:%s*" (file-name-nondirectory (directory-file-name repo-root))))
+         (buffer (get-buffer-create buffer-name)))
     (with-current-buffer buffer
-      (let ((inhibit-read-only t))
+      (let ((inhibit-read-only t)
+            (default-directory repo-root))
         (erase-buffer)
         (jj-mode)
         (magit-insert-section (jjbuf)  ; Root section wrapper
