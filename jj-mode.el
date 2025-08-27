@@ -45,6 +45,8 @@
     (define-key map (kbd "?") 'jj-help)
     (define-key map (kbd "x") 'jj-changeset-menu)
     (define-key map (kbd "V") 'jj-revert-file)
+    (define-key map (kbd "E") 'jj-diffedit-emacs)
+    (define-key map (kbd "M") 'jj-diffedit-smerge)
     map)
   "Keymap for `jj-mode'.")
 
@@ -401,6 +403,136 @@
               (repo-root (magit-toplevel)))
     (let ((full-file-path (expand-file-name file repo-root)))
       (find-file full-file-path))))
+
+(defun jj-diffedit-emacs ()
+  "Emacs-based diffedit using built-in ediff."
+  (interactive)
+  (let* ((section (magit-current-section))
+         (file (cond
+                ((and section (eq (oref section type) 'jj-file-section))
+                 (oref section file))
+                ((and section (eq (oref section type) 'jj-hunk-section))
+                 (oref section file))
+                (t nil))))
+    (if file
+        (jj-diffedit-with-ediff file)
+      (jj-diffedit-all))))
+
+(defun jj-diffedit-with-ediff (file)
+  "Open ediff session for a specific file against parent."
+  (let* ((repo-root (magit-toplevel))
+         (full-file-path (expand-file-name file repo-root))
+         (file-ext (file-name-extension file))
+         (parent-temp-file (make-temp-file (format "jj-parent-%s" (file-name-nondirectory file))
+                                           nil (when file-ext (concat "." file-ext))))
+         (parent-content (let ((default-directory repo-root))
+                           (jj--run-command "file" "show" "-r" "@-" file))))
+    
+    ;; Write parent content to temp file
+    (with-temp-file parent-temp-file
+      (insert parent-content)
+      ;; Enable proper major mode for syntax highlighting
+      (when file-ext
+        (let ((mode (assoc-default (concat "." file-ext) auto-mode-alist 'string-match)))
+          (when mode
+            (funcall mode)))))
+    
+    ;; Set up cleanup
+    (add-hook 'ediff-quit-hook
+              `(lambda ()
+                 (when (file-exists-p ,parent-temp-file)
+                   (delete-file ,parent-temp-file))
+                 (jj-log-refresh))
+              nil t)
+    
+    ;; Start ediff session
+    (ediff-files parent-temp-file full-file-path)
+    (message "Ediff: Left=Parent (@-), Right=Current (@). Edit right side, then 'q' to quit and save.")))
+
+(defun jj-diffedit-smerge ()
+  "Emacs-based diffedit using smerge-mode (merge conflict style)."
+  (interactive)
+  (let* ((section (magit-current-section))
+         (file (cond
+                ((and section (eq (oref section type) 'jj-file-section))
+                 (oref section file))
+                ((and section (eq (oref section type) 'jj-hunk-section))
+                 (oref section file))
+                (t nil))))
+    (if file
+        (jj-diffedit-with-smerge file)
+      (jj-diffedit-all))))
+
+(defun jj-diffedit-with-smerge (file)
+  "Open smerge-mode session for a specific file."
+  (let* ((repo-root (magit-toplevel))
+         (full-file-path (expand-file-name file repo-root))
+         (parent-content (let ((default-directory repo-root))
+                           (jj--run-command "file" "show" "-r" "@-" file)))
+         (current-content (if (file-exists-p full-file-path)
+                              (with-temp-buffer
+                                (insert-file-contents full-file-path)
+                                (buffer-string))
+                            ""))
+         (merge-buffer (get-buffer-create (format "*jj-smerge-%s*" (file-name-nondirectory file)))))
+    
+    (with-current-buffer merge-buffer
+      (erase-buffer)
+      
+      ;; Create merge-conflict format
+      (insert "<<<<<<< Parent (@-)\n")
+      (insert parent-content)
+      (unless (string-suffix-p "\n" parent-content)
+        (insert "\n"))
+      (insert "=======\n")
+      (insert current-content)
+      (unless (string-suffix-p "\n" current-content)
+        (insert "\n"))
+      (insert ">>>>>>> Current (@)\n")
+      
+      ;; Enable smerge-mode
+      (smerge-mode 1)
+      (setq-local jj-smerge-file file)
+      (setq-local jj-smerge-repo-root repo-root)
+      
+      ;; Add save hook
+      (add-hook 'after-save-hook 'jj-smerge-apply-changes nil t)
+      
+      (goto-char (point-min)))
+    
+    (switch-to-buffer-other-window merge-buffer)
+    (message "SMerge mode: Use C-c ^ commands to navigate/resolve conflicts, then save to apply.")))
+
+(defun jj-smerge-apply-changes ()
+  "Apply smerge changes to the original file."
+  (when (and (boundp 'jj-smerge-file) jj-smerge-file)
+    (let* ((file jj-smerge-file)
+           (repo-root jj-smerge-repo-root)
+           (full-file-path (expand-file-name file repo-root))
+           (content (buffer-string)))
+      
+      ;; Only apply if no conflict markers remain
+      (unless (or (string-match "^<<<<<<<" content)
+                  (string-match "^=======" content)
+                  (string-match "^>>>>>>>" content))
+        (with-temp-file full-file-path
+          (insert content))
+        (jj-log-refresh)
+        (message "Changes applied to %s" file)))))
+
+(defun jj-diffedit-all ()
+  "Open diffedit interface for all changes."
+  (let* ((changed-files (jj--get-changed-files))
+         (choice (if (= (length changed-files) 1)
+                     (car changed-files)
+                   (completing-read "Edit file: " changed-files))))
+    (when choice
+      (jj-diffedit-with-ediff choice))))
+
+(defun jj--get-changed-files ()
+  "Get list of files with changes in working copy."
+  (let ((diff-output (jj--run-command "diff" "--name-only")))
+    (split-string diff-output "\n" t)))
 
 (defun jj-log-visit-commit ()
   "Show details of commit at point."
