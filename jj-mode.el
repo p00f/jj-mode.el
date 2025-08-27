@@ -147,7 +147,7 @@
 (defun jj--parse-log-graph-line (line)
   "Parse a line from jj log output to extract changeset info."
   ;; Look for lines with commit markers (circles) followed by change IDs
-  (when (string-match "\\([○◉◆●◯◍]\\)\\s-*\\([a-z][a-z0-9]+\\)" line)
+  (when (string-match "\\([○◉◆●◯◍@]\\)\\s-*\\([a-z][a-z0-9]+\\)" line)
     (let* ((marker (match-string 1 line))
            (id (match-string 2 line))
            (rest (substring line (match-end 0)))
