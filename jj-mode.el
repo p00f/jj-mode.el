@@ -39,7 +39,7 @@
     (define-key map (kbd "B") 'jj-branch-list)
     (define-key map (kbd "P") 'jj-git-push)
     (define-key map (kbd "F") 'jj-git-fetch)
-    (define-key map (kbd "r") 'jj-rebase)
+    (define-key map (kbd "r") 'jj-rebase-transient)
     (define-key map (kbd "d") 'jj-diff)
     (define-key map (kbd "l") 'jj-log-limit)
     (define-key map (kbd "?") 'jj-help)
@@ -53,7 +53,9 @@
 (define-derived-mode jj-mode magit-section-mode "JJ"
   "Major mode for interacting with jj version control system."
   :group 'jj
-  (setq-local revert-buffer-function 'jj-log-refresh))
+  (setq-local revert-buffer-function 'jj-log-refresh)
+  ;; Clear rebase selections when buffer is killed
+  (add-hook 'kill-buffer-hook 'jj-rebase-clear-selections nil t))
 
 (defun jj--run-command (&rest args)
   "Run jj command with ARGS and return output."
@@ -413,8 +415,8 @@
   (jj-log-refresh)
   (message "Fetched from remote"))
 
-(defun jj-rebase ()
-  "Rebase onto commit at point."
+(defun jj-rebase-quick ()
+  "Quick rebase onto commit at point (original behavior)."
   (interactive)
   (when-let ((commit-id (jj-get-changeset-at-point)))
     (jj--run-command "rebase" "-d" commit-id)
@@ -449,6 +451,7 @@
   (interactive)
   (describe-keymap jj-mode-map))
 
+;;;###autoload
 (defun jj-goto-next-changeset ()
   "Navigate to the next changeset in the log."
   (interactive)
@@ -465,6 +468,7 @@
       (goto-char pos)
       (message "No more changesets"))))
 
+;;;###autoload
 (defun jj-goto-prev-changeset ()
   "Navigate to the previous changeset in the log."
   (interactive)
@@ -572,5 +576,145 @@
   (when-let* ((section (magit-current-section))
               (_ (eq (oref section type) 'jj-hunk-section)))
     (message "Apply hunk functionality would go here - jj doesn't have staging area like git")))
+
+;; Rebase state management
+(defvar jj-rebase-source nil
+  "Currently selected source commit for rebase.")
+
+(defvar jj-rebase-destinations nil
+  "List of currently selected destination commits for rebase.")
+
+(defvar jj-rebase-source-overlay nil
+  "Overlay for highlighting the selected source commit.")
+
+(defvar jj-rebase-destination-overlays nil
+  "List of overlays for highlighting selected destination commits.")
+
+;;;###autoload
+(defun jj-rebase-clear-selections ()
+  "Clear all rebase selections and overlays."
+  (interactive)
+  (setq jj-rebase-source nil
+        jj-rebase-destinations nil)
+  (when jj-rebase-source-overlay
+    (delete-overlay jj-rebase-source-overlay)
+    (setq jj-rebase-source-overlay nil))
+  (dolist (overlay jj-rebase-destination-overlays)
+    (delete-overlay overlay))
+  (setq jj-rebase-destination-overlays nil)
+  (message "Cleared all rebase selections"))
+
+;;;###autoload
+(defun jj-rebase-set-source ()
+  "Set the commit at point as rebase source."
+  (interactive)
+  (when-let ((commit-id (jj-get-changeset-at-point))
+             (section (magit-current-section)))
+    ;; Clear previous source overlay
+    (when jj-rebase-source-overlay
+      (delete-overlay jj-rebase-source-overlay))
+    ;; Set new source
+    (setq jj-rebase-source commit-id)
+    ;; Create overlay for visual indication
+    (setq jj-rebase-source-overlay 
+          (make-overlay (oref section start) (oref section end)))
+    (overlay-put jj-rebase-source-overlay 'face '(:background "dark green" :foreground "white"))
+    (overlay-put jj-rebase-source-overlay 'before-string "[SOURCE] ")
+    (message "Set source: %s" commit-id)))
+
+;;;###autoload
+(defun jj-rebase-toggle-destination ()
+  "Toggle the commit at point as a rebase destination."
+  (interactive)
+  (when-let ((commit-id (jj-get-changeset-at-point))
+             (section (magit-current-section)))
+    (if (member commit-id jj-rebase-destinations)
+        ;; Remove from destinations
+        (progn
+          (setq jj-rebase-destinations (remove commit-id jj-rebase-destinations))
+          ;; Remove overlay
+          (dolist (overlay jj-rebase-destination-overlays)
+            (when (and (>= (overlay-start overlay) (oref section start))
+                       (<= (overlay-end overlay) (oref section end)))
+              (delete-overlay overlay)
+              (setq jj-rebase-destination-overlays (remove overlay jj-rebase-destination-overlays))))
+          (message "Removed destination: %s" commit-id))
+      ;; Add to destinations
+      (push commit-id jj-rebase-destinations)
+      ;; Create overlay for visual indication
+      (let ((overlay (make-overlay (oref section start) (oref section end))))
+        (overlay-put overlay 'face '(:background "dark blue" :foreground "white"))
+        (overlay-put overlay 'before-string "[DEST] ")
+        (push overlay jj-rebase-destination-overlays)
+        (message "Added destination: %s" commit-id)))))
+
+;;;###autoload
+(defun jj-rebase-execute ()
+  "Execute rebase with selected source and destinations."
+  (interactive)
+  (if (and jj-rebase-source jj-rebase-destinations)
+      (when (yes-or-no-p (format "Rebase %s -> %s? " 
+                                 jj-rebase-source 
+                                 (string-join jj-rebase-destinations ", ")))
+        (let* ((dest-args (apply 'append (mapcar (lambda (dest) (list "-d" dest)) jj-rebase-destinations)))
+               (all-args (append (list "rebase" "-s" jj-rebase-source) dest-args))
+               (result (apply #'jj--run-command all-args)))
+          (if (string-match-p "error\\|Error" result)
+              (message "Rebase failed: %s" result)
+            (progn
+              (jj-rebase-clear-selections)
+              (jj-log-refresh)
+              (message "Rebase completed: %s -> %s" 
+                       jj-rebase-source 
+                       (string-join jj-rebase-destinations ", "))))))
+    (message "Please select source (s) and at least one destination (d) first")))
+
+;; Transient rebase menu
+;;;###autoload
+(defun jj-rebase-transient ()
+  "Transient for jj rebase operations."
+  (interactive)
+  (jj-rebase-transient--internal))
+
+(transient-define-prefix jj-rebase-transient--internal ()
+  "Internal transient for jj rebase operations."
+  [:description
+   (lambda ()
+     (concat "JJ Rebase"
+             (when jj-rebase-source
+               (format " | Source: %s" jj-rebase-source))
+             (when jj-rebase-destinations
+               (format " | Destinations: %s"
+                       (string-join jj-rebase-destinations ", ")))))
+   :class transient-columns
+   ["Selection"
+    ("s" "Set source" jj-rebase-set-source
+     :description (lambda ()
+                    (if jj-rebase-source
+                        (format "Set source (current: %s)" jj-rebase-source)
+                      "Set source"))
+     :transient t)
+    ("d" "Toggle destination" jj-rebase-toggle-destination
+     :description (lambda ()
+                    (format "Toggle destination (%d selected)"
+                            (length jj-rebase-destinations)))
+     :transient t)
+    ("c" "Clear selections" jj-rebase-clear-selections
+     :transient t)]
+   ["Actions"
+    ("r" "Execute rebase" jj-rebase-execute
+     :if (lambda () (and jj-rebase-source jj-rebase-destinations))
+     :description (lambda ()
+                    (if (and jj-rebase-source jj-rebase-destinations)
+                        (format "Rebase %s -> %s"
+                                jj-rebase-source
+                                (string-join jj-rebase-destinations ", "))
+                      "Execute rebase (select source & destinations first)"))
+     :transient nil)
+    ("n" "Next" jj-goto-next-changeset
+     :transient t)
+    ("p" "Prev" jj-goto-prev-changeset
+     :transient t)
+    ("q" "Quit" transient-quit-one)]])
 
 (provide 'jj-mode)
