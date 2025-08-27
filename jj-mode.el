@@ -20,7 +20,7 @@
 
 (defvar jj-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") 'jj-log-visit-commit)
+    (define-key map (kbd "RET") 'jj-enter-dwim)
     (define-key map (kbd "TAB") 'magit-section-toggle)
     (define-key map (kbd "g") 'jj-log-refresh)
     (define-key map (kbd "q") 'quit-window)
@@ -44,9 +44,7 @@
     (define-key map (kbd "l") 'jj-log-limit)
     (define-key map (kbd "?") 'jj-help)
     (define-key map (kbd "x") 'jj-changeset-menu)
-    (define-key map (kbd "v") 'jj-revert-hunk)
     (define-key map (kbd "V") 'jj-revert-file)
-    (define-key map (kbd "a") 'jj-apply-hunk)
     map)
   "Keymap for `jj-mode'.")
 
@@ -200,10 +198,10 @@
 
 (defun jj-log-insert-diff ()
   "Insert jj diff with hunks into current buffer."
-  (let ((diff-output (jj--run-command-color "diff")))
+  (let ((diff-output (jj--run-command-color "diff" "--git")))
     (when (and diff-output (not (string-empty-p diff-output)))
       (magit-insert-section (jj-diff-section)
-        (magit-insert-heading "Uncommitted Changes")
+        (magit-insert-heading "Working Copy Changes")
         (jj--insert-diff-hunks diff-output)
         (insert "\n")))))
 
@@ -214,21 +212,27 @@
         file-section-content
         in-file-section)
     (dolist (line lines)
-      (cond
-       ;; File header
-       ((string-match "^diff --git a/\\(.*\\) b/\\(.*\\)$" line)
-        ;; Process any pending file section
-        (when (and in-file-section current-file)
-          (jj--insert-file-section current-file file-section-content))
-        ;; Start new file section
-        (setq current-file (or (match-string 2 line) (match-string 1 line))
-              file-section-content (list line)
-              in-file-section t))
-       ;; Accumulate lines for current file section
-       (in-file-section
-        (push line file-section-content))
-       ;; Outside of any file section
-       (t nil)))
+      (let ((clean-line (substring-no-properties line)))
+        (cond
+         ;; File header
+         ((and (string-match "^diff --git a/\\(.*\\) b/\\(.*\\)$" clean-line)
+               (let ((file-a (match-string 1 clean-line))
+                     (file-b (match-string 2 clean-line)))
+                 ;; Process any pending file section
+                 (when (and in-file-section current-file)
+                   (jj--insert-file-section current-file file-section-content))
+                 ;; Start new file section
+                 (setq current-file (or file-b file-a)
+                       file-section-content (list line)
+                       in-file-section t)
+                 t)) ;; Return t to satisfy the condition
+          ;; This is just a placeholder - the real work is done in the condition above
+          nil)
+         ;; Accumulate lines for current file section
+         (in-file-section
+          (push line file-section-content))
+         ;; Outside of any file section
+         (t nil))))
     ;; Process final file section if any
     (when (and in-file-section current-file)
       (jj--insert-file-section current-file file-section-content))))
@@ -300,8 +304,7 @@
         (magit-insert-section (jjbuf)  ; Root section wrapper
           (jj-log-insert-logs)
           (jj-log-insert-status)
-          (jj-log-insert-diff)
-          (jj-log-insert-commits))
+          (jj-log-insert-diff))
         (goto-char (point-min))))
     (switch-to-buffer buffer)))
 
@@ -315,9 +318,89 @@
       (magit-insert-section (jjbuf)  ; Root section wrapper
         (jj-log-insert-logs)
         (jj-log-insert-status)
-        (jj-log-insert-diff)
-        (jj-log-insert-commits))
+        (jj-log-insert-diff))
       (goto-char pos))))
+
+(defun jj-enter-dwim ()
+  "Context-sensitive Enter key behavior."
+  (interactive)
+  (let ((section (magit-current-section)))
+    (cond
+     ;; On a changeset/commit - edit it with jj edit
+     ((and section
+           (memq (oref section type) '(jj-log-entry-section jj-commit-section))
+           (slot-boundp section 'commit-id))
+      (jj-edit-commit-at-point))
+     
+     ;; On a diff hunk line - jump to that line in the file
+     ((and section
+           (eq (oref section type) 'jj-hunk-section)
+           (slot-boundp section 'file))
+      (jj-goto-diff-line))
+     
+     ;; On a file section - visit the file
+     ((and section
+           (eq (oref section type) 'jj-file-section)
+           (slot-boundp section 'file))
+      (jj-visit-file))
+     
+     ;; Default - show commit details (old behavior)
+     (t
+      (jj-log-visit-commit)))))
+
+(defun jj-edit-commit-at-point ()
+  "Edit the commit at point using jj edit."
+  (interactive)
+  (when-let ((commit-id (jj-get-changeset-at-point)))
+    (let ((result (jj--run-command "edit" commit-id)))
+      (if (string-match-p "error\\|Error" result)
+          (message "Failed to edit commit: %s" result)
+        (progn
+          (jj-log-refresh)
+          (message "Now editing commit %s" commit-id))))))
+
+(defun jj-goto-diff-line ()
+  "Jump to the line in the file corresponding to the diff line at point."
+  (interactive)
+  (when-let* ((section (magit-current-section))
+              (_ (eq (oref section type) 'jj-hunk-section))
+              (file (oref section file))
+              (header (oref section header))
+              (repo-root (magit-toplevel)))
+    ;; Parse the hunk header to get line numbers
+    (when (string-match "^@@.*\\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)?.*@@" header)
+      (let* ((start-line (string-to-number (match-string 1 header)))
+             ;; Calculate which line within the hunk we're on
+             (hunk-start (oref section start))
+             (current-pos (point))
+             (line-offset 0)
+             (full-file-path (expand-file-name file repo-root)))
+        ;; Count lines from hunk start to current position
+        (save-excursion
+          (goto-char hunk-start)
+          (forward-line 1) ; Skip hunk header
+          (while (< (point) current-pos)
+            (let ((line (buffer-substring-no-properties
+                         (line-beginning-position) (line-end-position))))
+              ;; Only count context and added lines for line numbering
+              (unless (string-prefix-p "-" line)
+                (setq line-offset (1+ line-offset))))
+            (forward-line 1)))
+        ;; Open file and jump to calculated line
+        (let ((target-line (+ start-line line-offset -1))) ; -1 because we start counting from the header
+          (find-file full-file-path)
+          (goto-char (point-min))
+          (forward-line (max 0 target-line))
+          (message "Jumped to line %d in %s" (1+ target-line) file))))))
+
+(defun jj-visit-file ()
+  "Visit the file at point."
+  (interactive)
+  (when-let* ((section (magit-current-section))
+              (file (oref section file))
+              (repo-root (magit-toplevel)))
+    (let ((full-file-path (expand-file-name file repo-root)))
+      (find-file full-file-path))))
 
 (defun jj-log-visit-commit ()
   "Show details of commit at point."
@@ -331,7 +414,7 @@
       (with-current-buffer buffer
         (let ((inhibit-read-only t))
           (erase-buffer)
-          (insert (jj--run-command-color "show" "-r" commit-id))
+          (insert (jj--run-command-color "show" "-r" commit-id "--git"))
           (diff-mode)
           (ansi-color-apply-on-region (point-min) (point-max))
           (goto-char (point-min))))
@@ -432,8 +515,8 @@
       (let ((inhibit-read-only t))
         (erase-buffer)
         (if commit-id
-            (insert (jj--run-command-color "show" "-r" commit-id))
-          (insert (jj--run-command-color "diff")))
+            (insert (jj--run-command-color "show" "-r" commit-id "--git"))
+          (insert (jj--run-command-color "diff" "--git")))
         (diff-mode)
         (ansi-color-apply-on-region (point-min) (point-max))
         (goto-char (point-min))))
@@ -502,52 +585,6 @@
       (oref section commit-id))
      (t nil))))
 
-(defun jj-revert-hunk ()
-  "Revert the hunk at point."
-  (interactive)
-  (when-let* ((section (magit-current-section))
-              (_ (eq (oref section type) 'jj-hunk-section))
-              (file (oref section file))
-              (header (oref section header)))
-    (when (yes-or-no-p (format "Revert this hunk in %s? " file))
-      ;; Get the hunk content from the section
-      (let ((hunk-lines '()))
-        (save-excursion
-          (goto-char (oref section start))
-          (forward-line 1) ; Skip header
-          (while (< (point) (oref section end))
-            (push (buffer-substring-no-properties
-                   (line-beginning-position)
-                   (line-end-position))
-                  hunk-lines)
-            (forward-line 1)))
-        (setq hunk-lines (nreverse hunk-lines))
-        ;; Create a reverse patch
-        (let ((patch-file (make-temp-file "jj-revert-hunk" nil ".patch")))
-          (with-temp-file patch-file
-            (insert "diff --git a/" file " b/" file "\n")
-            (insert "--- a/" file "\n")
-            (insert "+++ b/" file "\n")
-            (insert header "\n")
-            ;; Insert reversed hunk lines
-            (dolist (line hunk-lines)
-              (cond
-               ((string-prefix-p "+" line)
-                (insert "-" (substring line 1) "\n"))
-               ((string-prefix-p "-" line)
-                (insert "+" (substring line 1) "\n"))
-               (t
-                (insert line "\n")))))
-          ;; Apply the patch using jj
-          (let ((result (shell-command-to-string
-                         (format "cd %s && patch -p1 < %s 2>&1"
-                                 (magit-toplevel)
-                                 patch-file))))
-            (delete-file patch-file)
-            (if (string-match-p "FAILED\\|rejected" result)
-                (message "Failed to apply patch: %s" result)
-              (jj-log-refresh)
-              (message "Hunk reverted successfully"))))))))
 
 (defun jj-revert-file ()
   "Revert all changes in the file at point."
@@ -570,12 +607,6 @@
           (jj-log-refresh)
           (message "File %s restored" file))))))
 
-(defun jj-apply-hunk ()
-  "Apply the hunk at point (for staging-like functionality)."
-  (interactive)
-  (when-let* ((section (magit-current-section))
-              (_ (eq (oref section type) 'jj-hunk-section)))
-    (message "Apply hunk functionality would go here - jj doesn't have staging area like git")))
 
 ;; Rebase state management
 (defvar jj-rebase-source nil
