@@ -50,6 +50,8 @@
     (define-key map (kbd "u") 'jj-undo)
     (define-key map (kbd "N") 'jj-new)
     (define-key map (kbd ".") 'jj-goto-current)
+    (define-key map (kbd "c") 'jj-commit)
+    (define-key map (kbd "D") 'jj-describe)
     map)
   "Keymap for `jj-mode'.")
 
@@ -365,6 +367,7 @@
           (message "Failed to edit commit: %s" result)
         (progn
           (jj-log-refresh)
+          (back-to-indentation)
           (message "Now editing commit %s" commit-id))))))
 
 (defun jj-goto-diff-line ()
@@ -665,6 +668,88 @@
         (jj--run-command "git" "push")
       (jj--run-command "git" "push" "--branch" branch)))
   (jj-log-refresh))
+
+(defun jj-commit ()
+  "Open commit message buffer."
+  (interactive)
+  (let ((current-desc (string-trim (jj--run-command "log" "-r" "@" "--no-graph" "-T" "description"))))
+    (jj--open-message-buffer "COMMIT_MSG" "jj commit" 'jj--commit-finish nil current-desc)))
+
+(defun jj-describe ()
+  "Open describe message buffer."
+  (interactive)
+  (let ((commit-id (jj-get-changeset-at-point)))
+    (if commit-id
+        (let ((current-desc (string-trim (jj--run-command "log" "-r" commit-id "--no-graph" "-T" "description"))))
+          (jj--open-message-buffer "DESCRIBE_MSG"
+                                   (format "jj describe -r %s" commit-id)
+                                   'jj--describe-finish commit-id current-desc))
+      (message "No changeset at point"))))
+
+(defun jj--open-message-buffer (buffer-name command finish-func &optional commit-id initial-desc)
+  "Open a message editing buffer."
+  (let* ((repo-root (or (magit-toplevel) default-directory))
+         (log-buffer (current-buffer))
+         (window-config (current-window-configuration))
+         (buffer (get-buffer-create (format "*%s:%s*" buffer-name (file-name-nondirectory (directory-file-name repo-root))))))
+    (with-current-buffer buffer
+      (erase-buffer)
+      (text-mode)
+      (setq-local default-directory repo-root)
+      (setq-local jj--message-command command)
+      (setq-local jj--message-finish-func finish-func)
+      (setq-local jj--message-commit-id commit-id)
+      (setq-local jj--log-buffer log-buffer)
+      (setq-local jj--window-config window-config)
+      (local-set-key (kbd "C-c C-c") 'jj--message-finish)
+      (local-set-key (kbd "C-c C-k") 'jj--message-abort)
+      (when initial-desc
+        (insert initial-desc))
+      (insert "\n\n# Enter your message. C-c C-c to finish, C-c C-k to cancel\n"))
+    (pop-to-buffer buffer)
+    (goto-char (point-min))))
+
+(defun jj--message-finish ()
+  "Finish editing the message and execute the command."
+  (interactive)
+  (let* ((message (buffer-substring-no-properties (point-min) (point-max)))
+         (lines (split-string message "\n"))
+         (filtered-lines (seq-remove (lambda (line) (string-prefix-p "#" line)) lines))
+         (final-message (string-trim (string-join filtered-lines "\n")))
+         (command jj--message-command)
+         (finish-func jj--message-finish-func)
+         (commit-id jj--message-commit-id)
+         (log-buffer jj--log-buffer)
+         (window-config jj--window-config))
+    (if (string-empty-p final-message)
+        (message "Empty message, aborting")
+      (kill-buffer)
+      (set-window-configuration window-config)
+      (funcall finish-func final-message commit-id))))
+
+(defun jj--message-abort ()
+  "Abort message editing."
+  (interactive)
+  (when (yes-or-no-p "Abort message editing? ")
+    (let ((window-config jj--window-config))
+      (kill-buffer)
+      (set-window-configuration window-config)
+      (message "Aborted"))))
+
+(defun jj--commit-finish (message &optional _commit-id)
+  "Finish commit with MESSAGE."
+  (jj--run-command "commit" "-m" message)
+  (jj-log-refresh)
+  (message "Committed"))
+
+(defun jj--describe-finish (message &optional commit-id)
+  "Finish describe with MESSAGE for COMMIT-ID."
+  (if commit-id
+      (progn
+        (jj--run-command "describe" "-r" commit-id "-m" message)
+        (jj-log-refresh)
+        (message "Description updated for %s" commit-id))
+    (message "No commit ID available")))
 
 (defun jj-git-fetch ()
   "Fetch from git remote."
