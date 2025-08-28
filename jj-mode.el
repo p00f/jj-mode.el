@@ -13,11 +13,6 @@
   :type 'string
   :group 'jj)
 
-(defcustom jj-log-limit 50
-  "Default number of commits to show in log."
-  :type 'integer
-  :group 'jj)
-
 (defcustom jj-debug nil
   "Enable debug logging for jj operations."
   :type 'boolean
@@ -32,40 +27,36 @@
 
 (defvar jj-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") 'jj-enter-dwim)
-    (define-key map (kbd "TAB") 'magit-section-toggle)
-    (define-key map (kbd "g") 'jj-log-refresh)
-    (define-key map (kbd "G") 'jj-git-transient)
-    (define-key map (kbd "q") 'quit-window)
+    ;; Navigation
     (define-key map (kbd "n") 'magit-section-forward)
     (define-key map (kbd "p") 'magit-section-backward)
     (define-key map (kbd "M-n") 'magit-section-forward-sibling)
     (define-key map (kbd "M-p") 'magit-section-backward-sibling)
-    (define-key map (kbd "j") 'jj-goto-next-changeset)
-    (define-key map (kbd "k") 'jj-goto-prev-changeset)
+    (define-key map (kbd ".") 'jj-goto-current)
+    (define-key map (kbd "TAB") 'magit-section-toggle)
+    (define-key map (kbd "q") 'quit-window)
+
+    ;; Basic operations
+    (define-key map (kbd "g") 'jj-log-refresh)
     (define-key map (kbd "c") 'jj-commit)
-    (define-key map (kbd "C") 'jj-commit-amend)
-    (define-key map (kbd "e") 'jj-edit-commit)
-    (define-key map (kbd "s") 'jj-squash)
-    (define-key map (kbd "S") 'jj-split)
-    (define-key map (kbd "b") 'jj-bookmark-transient)
-    (define-key map (kbd "B") 'jj-bookmark-list)
-    (define-key map (kbd "P") 'jj-git-push)
-    (define-key map (kbd "F") 'jj-git-fetch)
-    (define-key map (kbd "r") 'jj-rebase-transient)
-    (define-key map (kbd "d") 'jj-diff)
-    (define-key map (kbd "l") 'jj-log-limit)
-    (define-key map (kbd "?") 'jj-help)
-    (define-key map (kbd "x") 'jj-changeset-menu)
-    (define-key map (kbd "V") 'jj-revert-file)
-    (define-key map (kbd "E") 'jj-diffedit-emacs)
-    (define-key map (kbd "M") 'jj-diffedit-smerge)
+    (define-key map (kbd "e") 'jj-edit-changeset)
     (define-key map (kbd "u") 'jj-undo)
     (define-key map (kbd "N") 'jj-new)
-    (define-key map (kbd ".") 'jj-goto-current)
+    (define-key map (kbd "s") 'jj-squash)
     (define-key map (kbd "c") 'jj-commit)
-    (define-key map (kbd "D") 'jj-describe)
+    (define-key map (kbd "d") 'jj-describe)
     (define-key map (kbd "a") 'jj-abandon)
+
+    ;; Advanced Operations
+    (define-key map (kbd "RET") 'jj-enter-dwim)
+    (define-key map (kbd "b") 'jj-bookmark-transient)
+    (define-key map (kbd "r") 'jj-rebase-transient)
+    (define-key map (kbd "G") 'jj-git-transient)
+
+    ;; Experimental
+    (define-key map (kbd "D") 'jj-diff)
+    (define-key map (kbd "E") 'jj-diffedit-emacs)
+    (define-key map (kbd "M") 'jj-diffedit-smerge)
     map)
   "Keymap for `jj-mode'.")
 
@@ -95,7 +86,7 @@
     (with-temp-buffer
       (setq exit-code (apply #'call-process jj-executable nil t nil args))
       (setq result (buffer-string))
-      (jj--debug "Command completed in %.3f seconds, exit code: %d" 
+      (jj--debug "Command completed in %.3f seconds, exit code: %d"
                  (float-time (time-subtract (current-time) start-time))
                  exit-code)
       (when (and jj-show-command-output (not (string-empty-p result)))
@@ -111,7 +102,7 @@
       (let ((process-environment (cons "FORCE_COLOR=1" (cons "CLICOLOR_FORCE=1" process-environment))))
         (setq exit-code (apply #'call-process jj-executable nil t nil "--color=always" args))
         (setq result (ansi-color-apply (buffer-string)))
-        (jj--debug "Color command completed in %.3f seconds, exit code: %d" 
+        (jj--debug "Color command completed in %.3f seconds, exit code: %d"
                    (float-time (time-subtract (current-time) start-time))
                    exit-code)
         result))))
@@ -149,7 +140,7 @@
            "Check your rebase selections - source and destinations create a cycle.")
           ((string-match-p "No changes" error-msg)
            "No changes to commit. Make some changes first.")
-          ((and (string= command-name "git") 
+          ((and (string= command-name "git")
                 (or (string-match-p "Refusing to push" error-msg)
                     (string-match-p "would create new heads" error-msg)
                     (string-match-p "new bookmark" error-msg)))
@@ -164,51 +155,51 @@
   "Handle command result with proper error checking and messaging."
   (let ((trimmed-result (string-trim result))
         (command-name (car command-args)))
-    (jj--debug "Command result for '%s': %s" 
-               (string-join command-args " ") 
+    (jj--debug "Command result for '%s': %s"
+               (string-join command-args " ")
                trimmed-result)
-    
+
     ;; Always show command output if it exists (like CLI)
     (unless (string-empty-p trimmed-result)
       (message "%s" trimmed-result))
-    
+
     (cond
      ;; Check for various error indicators
      ((or (string-match-p "^Error:\\|^error:" trimmed-result)
           (string-match-p "^Warning:\\|^warning:" trimmed-result)
           (string-match-p "^fatal:" trimmed-result))
-      
+
       ;; Provide jj-specific contextual suggestions
       (cond
        ;; Working copy issues
        ((string-match-p "working copy is stale\\|concurrent modification" trimmed-result)
         (message "💡 Run 'jj workspace update-stale' to fix the working copy"))
-       
+
        ;; Conflict resolution needed
        ((string-match-p "merge conflict\\|conflict in" trimmed-result)
         (message "💡 Resolve conflicts manually, then run 'jj resolve' or use diffedit (E/M)"))
-       
+
        ;; Revision not found
        ((string-match-p "No such revision\\|revision.*not found" trimmed-result)
         (message "💡 Check the revision ID or refresh the log (g)"))
-       
+
        ;; Empty commit issues
        ((string-match-p "nothing to squash\\|would be empty" trimmed-result)
         (message "💡 Select a different commit with actual changes"))
-       
+
        ;; Rebase loop detection
        ((string-match-p "would create a loop\\|circular dependency" trimmed-result)
         (message "💡 Check your rebase source and destinations for cycles"))
-       
+
        ;; Authentication/permission issues
        ((string-match-p "authentication\\|permission denied" trimmed-result)
         (message "💡 Check your git credentials and repository access"))
-       
+
        ;; Generic suggestion for other errors
        (t
         (message "💡 Check 'jj help %s' for more information" command-name)))
       nil)
-     
+
      ;; Success case
      (t
       (when (and success-msg (string-empty-p trimmed-result))
@@ -221,7 +212,7 @@
         result)
     (jj--debug "Starting operation: %s" message)
     (setq result (funcall command-func))
-    (jj--debug "Operation completed in %.3f seconds" 
+    (jj--debug "Operation completed in %.3f seconds"
                (float-time (time-subtract (current-time) start-time)))
     result))
 
@@ -238,11 +229,11 @@
   "Enhanced push result handler with bookmark analysis."
   (let ((trimmed-result (string-trim result)))
     (jj--debug "Push result: %s" trimmed-result)
-    
+
     ;; Always show the raw command output first (like CLI)
     (unless (string-empty-p trimmed-result)
       (message "%s" trimmed-result))
-    
+
     (cond
      ;; Check for bookmark push restrictions
      ((or (string-match-p "Refusing to push" trimmed-result)
@@ -260,17 +251,17 @@
      ((string-match-p "Permission denied\\|authentication failed\\|403" trimmed-result)
       (message "💡 Check your git credentials and repository permissions")
       nil)
-     
+
      ;; Check for network issues
      ((string-match-p "Could not resolve hostname\\|Connection refused\\|timeout" trimmed-result)
       (message "💡 Check your network connection and remote URL")
       nil)
-     
+
      ;; Check for non-fast-forward issues
      ((string-match-p "non-fast-forward\\|rejected.*fetch first" trimmed-result)
       (message "💡 Run 'jj git fetch' first to update remote tracking")
       nil)
-     
+
      ;; Analyze jj-specific push patterns and provide contextual help
      ((string-match-p "Nothing changed" trimmed-result)
       (message "Nothing to push - all bookmarks are up to date")
@@ -280,59 +271,29 @@
      ((or (string-match-p "^error:" trimmed-result)
           (string-match-p "^fatal:" trimmed-result))
       nil)                              ; Error already shown above
-     
+
      ;; Success case
      (t
       (when (string-empty-p trimmed-result)
         (message "%s" success-msg))
       t))))
 
-(defun jj--get-unpushed-bookmarks ()
-  "Get list of bookmarks that have unpushed changes."
-  (let ((bookmark-output (jj--run-command "bookmark" "list"))
-        unpushed-bookmarks)
-    (when (and bookmark-output (not (string-empty-p bookmark-output)))
-      (dolist (line (split-string bookmark-output "\\n" t))
-        ;; Look for bookmarks that are ahead of their remote
-        ;; Format typically: "bookmark_name: commit_id (ahead by N commits)"
-        (when (string-match "^\\s-*\\([^:]+\\).*ahead\\|^\\s-*\\([^:]+\\).*\\(not tracked\\|no remote\\)" line)
-          (let ((bookmark-name (or (match-string 1 line) (match-string 2 line))))
-            (when bookmark-name
-              (push (string-trim bookmark-name) unpushed-bookmarks))))))
-    unpushed-bookmarks))
-
-(defun jj--show-push-status ()
-  "Show information about unpushed bookmarks."
-  (let ((unpushed (jj--get-unpushed-bookmarks)))
-    (when unpushed
-      (jj--message-with-log "📌 Bookmarks with unpushed changes: %s" 
-                            (string-join unpushed ", ")))))
-
-;;;###autoload
-(defun jj-push-status ()
-  "Show status of unpushed bookmarks."
-  (interactive)
-  (jj--show-push-status))
-
 (defun jj--analyze-status-for-hints (status-output)
   "Analyze jj status output and provide helpful hints."
-  (message "vvv")
-  (message status-output)
-  (message "^^^")
   (when (and status-output (not (string-empty-p status-output)))
     (cond
      ;; No changes
      ((string-match-p "The working copy is clean" status-output)
       (message "Working copy is clean - no changes to commit"))
-     
+
      ;; Conflicts present
      ((string-match-p "There are unresolved conflicts" status-output)
       (message "💡 Resolve conflicts with 'jj resolve' or use diffedit (E/M)"))
-     
+
      ;; Untracked files
      ((string-match-p "Untracked paths:" status-output)
       (message "💡 Add files with 'jj file track' or create .gitignore"))
-     
+
      ;; Working copy changes
      ((string-match-p "Working copy changes:" status-output)
       (message "💡 Commit changes with 'jj commit' or describe with 'jj describe'")))))
@@ -377,9 +338,8 @@
 
 (defun jj-log-insert-commits ()
   "Insert jj log commits into current buffer."
-  (let* ((log-output (jj--run-command "log" 
+  (let* ((log-output (jj--run-command "log"
                                       "--no-graph"
-                                      "-r" (format "ancestors(@, %d)" jj-log-limit)
                                       "--template" "change_id.shortest() ++ \" \" ++ if(bookmarks, bookmarks.join(\", \") ++ \" \", \"\") ++ author.name() ++ \" \" ++ author.timestamp().ago() ++ \" | \" ++ if(description, description.first_line(), \"(no description)\")"))
          (lines (split-string log-output "\n" t)))
     (when lines
@@ -596,25 +556,25 @@
      ((and section
            (memq (oref section type) '(jj-log-entry-section jj-commit-section))
            (slot-boundp section 'commit-id))
-      (jj-edit-commit-at-point))
-     
+      (jj-edit-changeset-at-point))
+
      ;; On a diff hunk line - jump to that line in the file
      ((and section
            (eq (oref section type) 'jj-hunk-section)
            (slot-boundp section 'file))
       (jj-goto-diff-line))
-     
+
      ;; On a file section - visit the file
      ((and section
            (eq (oref section type) 'jj-file-section)
            (slot-boundp section 'file))
       (jj-visit-file))
-     
+
      ;; Default - show commit details (old behavior)
      (t
       (jj-log-visit-commit)))))
 
-(defun jj-edit-commit-at-point ()
+(defun jj-edit-changeset-at-point ()
   "Edit the commit at point using jj edit."
   (interactive)
   (when-let ((commit-id (jj-get-changeset-at-point)))
@@ -692,7 +652,7 @@
                                            nil (when file-ext (concat "." file-ext))))
          (parent-content (let ((default-directory repo-root))
                            (jj--run-command "file" "show" "-r" "@-" file))))
-    
+
     ;; Write parent content to temp file
     (with-temp-file parent-temp-file
       (insert parent-content)
@@ -701,7 +661,7 @@
         (let ((mode (assoc-default (concat "." file-ext) auto-mode-alist 'string-match)))
           (when mode
             (funcall mode)))))
-    
+
     ;; Set up cleanup
     (add-hook 'ediff-quit-hook
               `(lambda ()
@@ -709,7 +669,7 @@
                    (delete-file ,parent-temp-file))
                  (jj-log-refresh))
               nil t)
-    
+
     ;; Start ediff session
     (ediff-files parent-temp-file full-file-path)
     (message "Ediff: Left=Parent (@-), Right=Current (@). Edit right side, then 'q' to quit and save.")))
@@ -740,10 +700,10 @@
                                 (buffer-string))
                             ""))
          (merge-buffer (get-buffer-create (format "*jj-smerge-%s*" (file-name-nondirectory file)))))
-    
+
     (with-current-buffer merge-buffer
       (erase-buffer)
-      
+
       ;; Create merge-conflict format
       (insert "<<<<<<< Parent (@-)\n")
       (insert parent-content)
@@ -754,17 +714,17 @@
       (unless (string-suffix-p "\n" current-content)
         (insert "\n"))
       (insert ">>>>>>> Current (@)\n")
-      
+
       ;; Enable smerge-mode
       (smerge-mode 1)
       (setq-local jj-smerge-file file)
       (setq-local jj-smerge-repo-root repo-root)
-      
+
       ;; Add save hook
       (add-hook 'after-save-hook 'jj-smerge-apply-changes nil t)
-      
+
       (goto-char (point-min)))
-    
+
     (switch-to-buffer-other-window merge-buffer)
     (message "SMerge mode: Use C-c ^ commands to navigate/resolve conflicts, then save to apply.")))
 
@@ -775,7 +735,7 @@
            (repo-root jj-smerge-repo-root)
            (full-file-path (expand-file-name file repo-root))
            (content (buffer-string)))
-      
+
       ;; Only apply if no conflict markers remain
       (unless (or (string-match "^<<<<<<<" content)
                   (string-match "^=======" content)
@@ -817,27 +777,13 @@
           (goto-char (point-min))))
       (display-buffer buffer))))
 
-(defun jj-commit (&optional amend)
-  "Create a new commit. With AMEND, amend the current commit."
-  (interactive "P")
-  (let ((desc (read-string (if amend "Amend message: " "Commit message: "))))
-    (if amend
-        (jj--run-command "describe" "-m" desc)
-      (jj--run-command "commit" "-m" desc)))
-  (jj-log-refresh))
-
-(defun jj-commit-amend ()
-  "Amend the current commit."
-  (interactive)
-  (jj-commit t))
-
-(defun jj-edit-commit ()
+(defun jj-edit-changeset ()
   "Edit commit at point."
   (interactive)
   (when-let ((commit-id (jj-get-changeset-at-point)))
     (let ((result (jj--run-command "edit" commit-id)))
       (if (jj--handle-command-result (list "edit" commit-id) result
-                                     (format "Now editing commit %s" commit-id)
+                                     (format "Now editing changeset %s" commit-id)
                                      "Failed to edit commit")
           (jj-log-refresh)))))
 
@@ -851,19 +797,6 @@
                                      "Failed to squash commit")
           (jj-log-refresh)))))
 
-(defun jj-split ()
-  "Split commit at point or current commit."
-  (interactive)
-  (if-let ((commit-id (jj-get-changeset-at-point)))
-      (progn
-        (jj--run-command "split" "-r" commit-id)
-        (jj-log-refresh)
-        (message "Split commit %s" commit-id))
-    ;; If no commit at point, split current working copy
-    (jj--run-command "split")
-    (jj-log-refresh)
-    (message "Split current commit")))
-
 (defun jj-bookmark-create ()
   "Create a new bookmark."
   (interactive)
@@ -871,26 +804,13 @@
          (name (read-string "Bookmark name: ")))
     (unless (string-empty-p name)
       (jj--run-command "bookmark" "create" name "-r" commit-id)
-      (jj-log-refresh)
-      (message "Created bookmark '%s' at %s" name commit-id))))
-
-(defun jj-bookmark-list ()
-  "List bookmarks."
-  (interactive)
-  (let ((buffer (get-buffer-create "*jj-bookmarks*")))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (jj--run-command-color "bookmark" "list"))
-        (goto-char (point-min))
-        (view-mode)))
-    (display-buffer buffer)))
+      (jj-log-refresh))))
 
 (defun jj-bookmark-abandon ()
   "Abandon a bookmark."
   (interactive)
   (let* ((bookmarks-output (jj--run-command "bookmark" "list"))
-         (bookmarks (seq-filter 
+         (bookmarks (seq-filter
                      (lambda (line) (not (string-empty-p line)))
                      (split-string bookmarks-output "\n")))
          (bookmark-names (mapcar
@@ -911,7 +831,7 @@
   "Forget a bookmark."
   (interactive)
   (let* ((bookmarks-output (jj--run-command "bookmark" "list"))
-         (bookmarks (seq-filter 
+         (bookmarks (seq-filter
                      (lambda (line) (not (string-empty-p line)))
                      (split-string bookmarks-output "\n")))
          (bookmark-names (mapcar
@@ -932,7 +852,7 @@
   "Track a remote bookmark."
   (interactive)
   (let* ((remotes-output (jj--run-command "bookmark" "list" "--all"))
-         (remote-lines (seq-filter 
+         (remote-lines (seq-filter
                         (lambda (line) (string-match "@" line))
                         (split-string remotes-output "\n")))
          (remote-bookmarks (mapcar
@@ -1139,16 +1059,8 @@
                                    "Fetched from remote" "Fetch failed")
         (jj-log-refresh))))
 
-(defun jj-rebase-quick ()
-  "Quick rebase onto commit at point (original behavior)."
-  (interactive)
-  (when-let ((commit-id (jj-get-changeset-at-point)))
-    (jj--run-command "rebase" "-d" commit-id)
-    (jj-log-refresh)
-    (message "Rebased onto %s" commit-id)))
-
 (defun jj-diff ()
-  "Show diff for current changes or commit at point."
+  "Show diff for current change or commit at point."
   (interactive)
   (let* ((commit-id (jj-get-changeset-at-point))
          (buffer (get-buffer-create "*jj-diff*")))
@@ -1162,18 +1074,6 @@
         (ansi-color-apply-on-region (point-min) (point-max))
         (goto-char (point-min))))
     (display-buffer buffer)))
-
-(defun jj-log-limit ()
-  "Change the number of commits shown in log."
-  (interactive)
-  (let ((new-limit (read-number "Number of commits to show: " jj-log-limit)))
-    (setq jj-log-limit new-limit)
-    (jj-log-refresh)))
-
-(defun jj-help ()
-  "Show jj help."
-  (interactive)
-  (describe-keymap jj-mode-map))
 
 ;;;###autoload
 (defun jj-goto-next-changeset ()
@@ -1209,14 +1109,6 @@
       (goto-char pos)
       (message "No more changesets"))))
 
-(defun jj-changeset-menu ()
-  "Show a transient menu for changeset operations."
-  (interactive)
-  (if-let ((commit-id (jj-get-changeset-at-point)))
-      (message "Operations for changeset %s:\ne - Edit\ns - Squash\nS - Split\nr - Rebase\nd - Diff\nRET - Show details"
-               commit-id)
-    (message "No changeset at point")))
-
 (defun jj-get-changeset-at-point ()
   "Get the changeset ID at point."
   (when-let ((section (magit-current-section)))
@@ -1225,25 +1117,6 @@
            (memq (oref section type) '(jj-log-entry-section jj-commit-section)))
       (oref section commit-id))
      (t nil))))
-
-
-(defun jj-revert-file ()
-  "Revert all changes in the file at point."
-  (interactive)
-  (when-let* ((section (magit-current-section))
-              (file (cond
-                     ((eq (oref section type) 'jj-file-section)
-                      (oref section file))
-                     ((eq (oref section type) 'jj-hunk-section)
-                      (oref section file)))))
-    (when (yes-or-no-p (format "Revert all changes in %s? " file))
-      (jj--message-with-log "Restoring %s..." file)
-      (let ((result (jj--run-command "restore" file)))
-        (if (jj--handle-command-result (list "restore" file) result
-                                       (format "File %s restored" file)
-                                       "Failed to restore file")
-            (jj-log-refresh))))))
-
 
 ;; Rebase state management
 (defvar jj-rebase-source nil
@@ -1284,7 +1157,7 @@
     ;; Set new source
     (setq jj-rebase-source commit-id)
     ;; Create overlay for visual indication
-    (setq jj-rebase-source-overlay 
+    (setq jj-rebase-source-overlay
           (make-overlay (oref section start) (oref section end)))
     (overlay-put jj-rebase-source-overlay 'face '(:background "dark green" :foreground "white"))
     (overlay-put jj-rebase-source-overlay 'before-string "[SOURCE] ")
@@ -1321,15 +1194,15 @@
   "Execute rebase with selected source and destinations."
   (interactive)
   (if (and jj-rebase-source jj-rebase-destinations)
-      (when (yes-or-no-p (format "Rebase %s -> %s? " 
-                                 jj-rebase-source 
+      (when (yes-or-no-p (format "Rebase %s -> %s? "
+                                 jj-rebase-source
                                  (string-join jj-rebase-destinations ", ")))
         (let* ((dest-args (apply 'append (mapcar (lambda (dest) (list "-d" dest)) jj-rebase-destinations)))
                (all-args (append (list "rebase" "-s" jj-rebase-source) dest-args))
-               (progress-msg (format "Rebasing %s onto %s" 
+               (progress-msg (format "Rebasing %s onto %s"
                                      jj-rebase-source
                                      (string-join jj-rebase-destinations ", ")))
-               (success-msg (format "Rebase completed: %s -> %s" 
+               (success-msg (format "Rebase completed: %s -> %s"
                                     jj-rebase-source
                                     (string-join jj-rebase-destinations ", "))))
           (jj--message-with-log "%s..." progress-msg)

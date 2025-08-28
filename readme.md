@@ -51,7 +51,6 @@ buffer (`*jj-log:project-name*`).
 
 #### Navigation
 - `n`/`p` - Navigate between sections
-- `j`/`k` - Navigate between changesets
 - `RET` - Context-sensitive action (edit changeset, jump to file/line in diffs)
 - `.` - Jump to current changeset (@)
 - `TAB` - Toggle section folding
@@ -59,12 +58,13 @@ buffer (`*jj-log:project-name*`).
 #### Basic Operations
 - `g` - Refresh log
 - `c` - Commit (opens message buffer)
-- `D` - Describe changeset at point
+- `d` - Describe changeset at point (opens message buffer)
 - `e` - Edit changeset (jj edit)
 - `u` - Undo last operation
-- `N` - New changeset
+- `s` - Squash
+- `N` - New changeset here
 
-#### Advanced Operations  
+#### Advanced Operations
 - `r` - Rebase transient menu
   - `s` - Set rebase source
   - `d` - Toggle rebase destination
@@ -72,7 +72,7 @@ buffer (`*jj-log:project-name*`).
   - `c` - Clear selections
 - `b` - Bookmark transient menu
   - `c` - Create bookmark
-  - `a` - Abandon bookmark  
+  - `a` - Abandon bookmark
   - `f` - Forget bookmark
   - `t` - Track remote bookmark
   - `T` - Tug (jj tug)
@@ -104,9 +104,6 @@ When editing commit/describe messages:
 ## Configuration
 
 ```lisp
-;; Customize log limit (default: 50)
-(setq jj-log-limit 100)
-
 ;; Customize jj executable path if needed
 (setq jj-executable "/path/to/jj")
 ```
