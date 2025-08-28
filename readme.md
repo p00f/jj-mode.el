@@ -18,7 +18,7 @@ interact with JJ repositories from within Emacs.
 ## Requirements
 
 - Emacs 26.1 or later
-- [Jujutsu (jj)](https://github.com/martinvonz/jj) installed and in PATH
+- [Jujutsu (jj)](https://github.com/jj-vcs/jj) installed and in PATH
 - [magit](https://magit.vc/) (for section management and UI components)
 - [transient](https://github.com/magit/transient) (usually bundled with magit)
 
