@@ -55,6 +55,7 @@
     (define-key map (kbd ".") 'jj-goto-current)
     (define-key map (kbd "c") 'jj-commit)
     (define-key map (kbd "D") 'jj-describe)
+    (define-key map (kbd "a") 'jj-abandon)
     map)
   "Keymap for `jj-mode'.")
 
@@ -729,6 +730,15 @@
     (jj-log-refresh)
     (when commit-id
       (jj-goto-commit commit-id))))
+
+(defun jj-abandon ()
+  "Abandon a changeset."
+  (interactive)
+  (if-let ((commit-id (jj-get-changeset-at-point)))
+      (progn
+        (jj--run-command "abandon" "-r" commit-id)
+        (jj-log-refresh))
+    (message "Can only run new on a change")))
 
 (defun jj-new ()
   "Create a new changeset."
