@@ -236,10 +236,17 @@
       (setq start (match-end 0)))
     (nreverse names)))
 
-(defun jj--get-bookmark-names ()
-  "Call to jj and get the list of local bookmarks."
-  (interactive)
-  (split-string (jj--run-command "bookmark" "list" "-T" "name ++ ' '") " " t))
+
+(defun jj--get-bookmark-names (&optional all-remotes)
+  "Return bookmark names.
+When ALL-REMOTES is non-nil, include remote bookmarks formatted as NAME@REMOTE."
+  (let* ((template (if all-remotes
+                       "if(remote, name ++ '@' ++ remote ++ '\n', '')"
+                     "name ++ '\n'"))
+         (args (append '("bookmark" "list")
+                       (and all-remotes '("--all"))
+                       (list "-T" template))))
+    (split-string (apply #'jj--run-command args) "\n" t)))
 
 (defun jj--handle-push-result (cmd-args result success-msg)
   "Enhanced push result handler with bookmark analysis."
@@ -1074,15 +1081,25 @@
         (jj-log-refresh))
     (message "Can only run new on a change")))
 
-(defun jj-new ()
-  "Create a new changeset."
-  (interactive)
-  (if-let ((commit-id (jj-get-changeset-at-point)))
-      (progn
-        (jj--run-command "new" "-r" commit-id)
-        (jj-log-refresh)
-        (jj-goto-commit commit-id))
-    (message "Can only run new on a change")))
+(defun jj-new (arg)
+  "Create a new changeset.
+With prefix ARG, prompt for the name/ID of the base changeset from all remotes."
+  (interactive "P")
+  (let* ((base (if arg
+                   (let ((s (completing-read "Create new changeset from (id/bookmark): "
+                                             (jj--get-bookmark-names t) nil nil)))
+                     (when (not (string-empty-p s)) s))
+                 (jj-get-changeset-at-point))))
+    (if (not base)
+        (user-error "Can only run new on a change")
+      (let ((result (jj--run-command "new" "-r" base)))
+        (when (jj--handle-command-result
+               (list "new" "-r" base)
+               result
+               "Created new changeset"
+               "Failed to create new changeset")
+          (jj-log-refresh)
+          (jj-goto-current))))))
 
 (defun jj-goto-current ()
   "Jump to the current changeset (@)."
