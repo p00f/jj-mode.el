@@ -32,7 +32,6 @@
   :type 'hook
   :group 'jj)
 
-
 (defvar jj-mode-map
   (let ((map (make-sparse-keymap)))
     ;; Navigation
@@ -65,8 +64,34 @@
     (define-key map (kbd "D") 'jj-diff)
     (define-key map (kbd "E") 'jj-diffedit-emacs)
     (define-key map (kbd "M") 'jj-diffedit-smerge)
+    (define-key map (kbd "?") 'jj-mode-transient)
     map)
   "Keymap for `jj-mode'.")
+
+;;;###autoload
+(transient-define-prefix jj-mode-transient ()
+  "JJ commands transient menu."
+  [:description "JJ Commands" :class transient-columns
+                ["Basic Operations"
+                 ("g" "Refresh log" jj-log-refresh)
+                 ("c" "Commit" jj-commit)
+                 ("e" "Edit changeset" jj-edit-changeset)
+                 ("u" "Undo last change" jj-undo)
+                 ("N" "New changeset" jj-new)
+                 ("a" "Abandon changeset" jj-abandon)
+                 ("d" "Describe changeset" jj-describe)
+                 ("s" "Squash changeset" jj-squash-transient)]
+                ["Advanced Operations"
+                 ("r" "Rebase changeset" jj-rebase-transient)
+                 ("b" "Bookmark operations" jj-bookmark-transient)
+                 ("G" "Git operations" jj-git-transient)]
+                ["Experimental"
+                 ("D" "Show diff" jj-diff)
+                 ("E" "DiffEdit (ediff)" jj-diffedit-emacs)
+                 ("M" "DiffEdit (smerge)" jj-diffedit-smerge)]
+                ["Exit"
+                 ("?" "Show cool help" transient-help)
+                 ("q" "Quit transient" transient-quit-one)]])
 
 (define-derived-mode jj-mode magit-section-mode "JJ"
   "Major mode for interacting with jj version control system."
