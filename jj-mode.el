@@ -4,6 +4,9 @@
 (require 'magit-section)
 (require 'transient)
 (require 'ansi-color)
+(require 'cl-lib)
+(require 'seq)
+(require 'subr-x)
 
 (defgroup jj nil
   "Interface to jj version control system."
@@ -369,21 +372,6 @@ When ALL-REMOTES is non-nil, include remote bookmarks formatted as NAME@REMOTE."
    (start :initarg :hunk-start)
    (header :initarg :header)))
 
-(defun jj--parse-log-line (line)
-  "Parse a single jj log line."
-  (when (string-match "^\\([a-z]+\\)\\s-+\\([^|]+\\)\\s-*|\\s-*\\(.*\\)$" line)
-    (let* ((id (match-string 1 line))
-           (info (match-string 2 line))
-           (desc (match-string 3 line))
-           (bookmarks (when (string-match "\\(([^)]+)\\)" info)
-                        (match-string 1 info)))
-           (author-date (replace-regexp-in-string "\\s-*([^)]+)\\s-*" "" info)))
-      (list :id id
-            :info info
-            :author-date author-date
-            :description desc
-            :bookmarks bookmarks))))
-
 (defun jj--parse-log-graph-line (line)
   "Parse LINE from jj log output to extract changeset info."
   (when (string-match "\\([○◉×x◆●◯◍@]\\)\\s-*\\([a-z][a-z0-9]+\\)" line)
@@ -407,24 +395,78 @@ When ALL-REMOTES is non-nil, include remote bookmarks formatted as NAME@REMOTE."
               :description description
               :full-line line)))))
 
+(defun jj--strip-graph-prefix (s)
+  "Drop leading ASCII-graph glyphs and spaces from line S."
+  (when s
+    (let* ((rx "^[[:space:]│├┤┬┴┼─╭╮╰╯╱╲╳•○●◆@~]+"))
+      (string-trim-left s rx))))
+
+(defun jj--get-log-lines-pairs (&optional buf)
+  "Get log line pairs from BUF (defaults to `current-buffer').
+
+This somewhat naively runs log, splits on newlines, and partitions the
+lines into pairs.
+
+Each pair SHOULD be (line-with-changeset-id-and-email description-line).
+
+The results of this fn are fed into `jj--parse-log-entries'."
+  (with-current-buffer (or buf (current-buffer))
+    (let ((log-output (jj--run-command-color "log")))
+      (when (and log-output (not (string-empty-p log-output)))
+        (let ((lines (split-string log-output "\n" t)))
+          (cl-loop for cell on lines by #'cddr
+                   for cur = (car cell)
+                   for nxt = (cadr cell)
+                   collect (list cur nxt)))))))
+
+(defun jj-parse-log-entries (entries)
+  "Parse ENTRIES of the shape ((line1 line2) ...) into plists.
+
+This fn does not try to intelligently parse the contents of the line. If
+the log contents are stupidly shaped, that will be reflected here.
+
+Lines may start with ASCII graph glyphs which are ignored."
+  (cl-loop for (l1 l2) in entries
+           for a = (jj--strip-graph-prefix l1)
+           for b = (jj--strip-graph-prefix l2)
+
+           for change-id = (seq-take a 8)
+
+           when (not (seq-empty-p change-id))
+
+           collect (let* ((splitted-string (split-string
+                                            a
+                                            " "))
+                          (commit-id (car (last splitted-string))))
+
+                     (seq-let (_change-id email _date _time &rest bookmarks) (butlast splitted-string)
+
+                       (list :id change-id
+                             :line l1
+                             :line2 l2
+                             :email email
+                             :commit-id commit-id
+                             :description b
+                             :bookmarks (seq-filter
+                                         (lambda (s)
+                                           (not (equal s "git_head()")))
+                                         bookmarks))))))
+
 (defun jj-log-insert-logs ()
   "Insert jj log graph into current buffer."
-  (let ((log-output (jj--run-command-color "log")))
-    (when (and log-output (not (string-empty-p log-output)))
-      (magit-insert-section (jj-log-graph-section)
-        (magit-insert-heading "Log Graph")
-        (let ((lines (split-string log-output "\n" t)))
-          (dolist (line lines)
-            (if-let ((changeset-data (jj--parse-log-graph-line line)))
-                ;; This line represents a changeset
-                (magit-insert-section section (jj-log-entry-section)
-                                      (oset section commit-id (plist-get changeset-data :id))
-                                      (oset section description (plist-get changeset-data :description))
-                                      (oset section bookmarks (plist-get changeset-data :bookmarks))
-                                      (insert line "\n"))
-              ;; This is a graph line or other content
-              (insert line "\n"))))
-        (insert "\n")))))
+  (magit-insert-section (jj-log-graph-section)
+    (magit-insert-heading "Log Graph")
+
+    (dolist (entry (jj-parse-log-entries (jj--get-log-lines-pairs)))
+      (magit-insert-section section (jj-log-entry-section)
+                            (oset section commit-id (plist-get entry :id))
+                            (oset section description (plist-get entry :description))
+                            (oset section bookmarks (plist-get entry :bookmarks))
+                            (insert (plist-get entry :line) "\n")
+                            (when-let ((l2 (plist-get entry :line2)))
+                              (insert l2 "\n"))))
+
+    (insert "\n")))
 
 (defun jj-log-insert-status ()
   "Insert jj status into current buffer."
