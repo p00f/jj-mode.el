@@ -27,7 +27,6 @@
   :type 'boolean
   :group 'jj)
 
-
 (defcustom jj-log-sections-hook '(jj-log-insert-logs
                                   jj-log-insert-status
                                   jj-log-insert-diff)
@@ -114,6 +113,17 @@ The function must accept one argument: the buffer to display."
   (add-hook 'kill-buffer-hook 'jj-rebase-clear-selections nil t)
   ;; Clear squash selections when buffer is killed
   (add-hook 'kill-buffer-hook 'jj-squash-clear-selections nil t))
+
+(defvar-local jj--repo-root nil
+  "Cached repository root for the current buffer.")
+
+(defun jj--root ()
+  "Find root of the current repository."
+  (let ((root (or (and (boundp 'jj--repo-root) jj--repo-root)
+                  (locate-dominating-file default-directory ".jj"))))
+    (unless root
+      (user-error "Cannot find root -- not in a JJ repo"))
+    root))
 
 (defun jj--debug (format-string &rest args)
   "Log debug message if jj-debug is enabled."
@@ -589,7 +599,7 @@ Lines may start with ASCII graph glyphs which are ignored."
 (defun jj-log ()
   "Display jj log in a magit-style buffer."
   (interactive)
-  (let* ((repo-root (or (magit-toplevel) default-directory))
+  (let* ((repo-root (jj--root))
          (buffer-name (format "*jj-log:%s*" (file-name-nondirectory (directory-file-name repo-root))))
          (buffer (get-buffer-create buffer-name)))
     (with-current-buffer buffer
@@ -597,6 +607,7 @@ Lines may start with ASCII graph glyphs which are ignored."
             (default-directory repo-root))
         (erase-buffer)
         (jj-mode)
+        (setq-local jj--repo-root repo-root)
         (magit-insert-section (jjbuf)  ; Root section wrapper
           (magit-run-section-hook 'jj-log-sections-hook))
         (goto-char (point-min))))
@@ -658,7 +669,7 @@ Lines may start with ASCII graph glyphs which are ignored."
               (_ (eq (oref section type) 'jj-hunk-section))
               (file (oref section file))
               (header (oref section header))
-              (repo-root (magit-toplevel)))
+              (repo-root (jj--root)))
     ;; Parse the hunk header to get line numbers
     (when (string-match "^@@.*\\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)?.*@@" header)
       (let* ((start-line (string-to-number (match-string 1 header)))
@@ -690,7 +701,7 @@ Lines may start with ASCII graph glyphs which are ignored."
   (interactive)
   (when-let* ((section (magit-current-section))
               (file (oref section file))
-              (repo-root (magit-toplevel)))
+              (repo-root (jj--root)))
     (let ((full-file-path (expand-file-name file repo-root)))
       (find-file full-file-path))))
 
@@ -710,7 +721,7 @@ Lines may start with ASCII graph glyphs which are ignored."
 
 (defun jj-diffedit-with-ediff (file)
   "Open ediff session for a specific file against parent."
-  (let* ((repo-root (magit-toplevel))
+  (let* ((repo-root (jj--root))
          (full-file-path (expand-file-name file repo-root))
          (file-ext (file-name-extension file))
          (parent-temp-file (make-temp-file (format "jj-parent-%s" (file-name-nondirectory file))
@@ -755,7 +766,7 @@ Lines may start with ASCII graph glyphs which are ignored."
 
 (defun jj-diffedit-with-smerge (file)
   "Open smerge-mode session for a specific file."
-  (let* ((repo-root (magit-toplevel))
+  (let* ((repo-root (jj--root))
          (full-file-path (expand-file-name file repo-root))
          (parent-content (let ((default-directory repo-root))
                            (jj--run-command "file" "show" "-r" "@-" file)))
@@ -1235,7 +1246,7 @@ With prefix ARG, prompt for the name/ID of the base changeset from all remotes."
 
 (defun jj--open-message-buffer (buffer-name command finish-func &optional commit-id initial-desc)
   "Open a message editing buffer."
-  (let* ((repo-root (or (magit-toplevel) default-directory))
+  (let* ((repo-root (jj--root))
          (log-buffer (current-buffer))
          (window-config (current-window-configuration))
          (buffer (get-buffer-create (format "*%s:%s*" buffer-name (file-name-nondirectory (directory-file-name repo-root))))))
