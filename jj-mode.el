@@ -109,9 +109,11 @@
 
 (defun jj--root ()
   "Find root of the current repository."
-  (or (and (boundp 'jj--repo-root) jj--repo-root)
-      (magit-toplevel)
-      (locate-dominating-file default-directory ".jj")))
+  (let ((root (or (and (boundp 'jj--repo-root) jj--repo-root)
+                  (locate-dominating-file default-directory ".jj"))))
+    (unless root
+      (user-error "Cannot find root -- not in a JJ repo"))
+    root))
 
 (defun jj--debug (format-string &rest args)
   "Log debug message if jj-debug is enabled."
