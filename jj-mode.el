@@ -35,6 +35,16 @@
   :type 'hook
   :group 'jj)
 
+(defcustom jj-log-display-function #'pop-to-buffer
+  "Function called to display the jj log buffer.
+The function must accept one argument: the buffer to display."
+  :type '(choice
+          (function-item switch-to-buffer)
+          (function-item pop-to-buffer)
+          (function-item display-buffer)
+          (function :tag "Custom function"))
+:group 'jj)
+
 (defvar jj-mode-map
   (let ((map (make-sparse-keymap)))
     ;; Navigation
@@ -590,7 +600,7 @@ Lines may start with ASCII graph glyphs which are ignored."
         (magit-insert-section (jjbuf)  ; Root section wrapper
           (magit-run-section-hook 'jj-log-sections-hook))
         (goto-char (point-min))))
-    (switch-to-buffer buffer)))
+    (funcall jj-log-display-function buffer)))
 
 (defun jj-log-refresh (&optional _ignore-auto _noconfirm)
   "Refresh the jj log buffer."
