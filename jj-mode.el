@@ -42,7 +42,7 @@ The function must accept one argument: the buffer to display."
           (function-item pop-to-buffer)
           (function-item display-buffer)
           (function :tag "Custom function"))
-:group 'jj)
+  :group 'jj)
 
 (defvar jj-mode-map
   (let ((map (make-sparse-keymap)))
@@ -119,7 +119,7 @@ The function must accept one argument: the buffer to display."
   "Cached repository root for the current buffer.")
 
 (defconst jj--log-template
-"'\x1e' ++
+  "'\x1e' ++
 if(self.root(),
   format_root_commit(self),
   label(
@@ -151,7 +151,7 @@ if(self.root(),
   )
 )
 "
-"Template for formatting log entries.")
+  "Template for formatting log entries.")
 
 (defun jj--root ()
   "Find root of the current repository."
@@ -447,26 +447,26 @@ The results of this fn are fed into `jj--parse-log-entries'."
                    for elems = (mapcar #'string-trim (split-string line "\x1e" ))
                    when (> (length elems) 1) collect
                    (seq-let (prefix change-id author bookmarks git-head conflict signature empty short-desc commit-id timestamp long-desc) elems
-                      (list :id (seq-take change-id 8)
-                            :prefix prefix
-                            :line line
-                            :elems (seq-remove (lambda (l) (or (not l) (string-blank-p l))) elems)
-                            :author author
-                            :commit_id commit-id
-                            :short-desc short-desc
-                            :long-desc  (if long-desc (json-parse-string long-desc) nil)
-                            :timestamp  timestamp
-                            :bookmarks bookmarks ))
+                     (list :id (seq-take change-id 8)
+                           :prefix prefix
+                           :line line
+                           :elems (seq-remove (lambda (l) (or (not l) (string-blank-p l))) elems)
+                           :author author
+                           :commit_id commit-id
+                           :short-desc short-desc
+                           :long-desc  (if long-desc (json-parse-string long-desc) nil)
+                           :timestamp  timestamp
+                           :bookmarks bookmarks ))
                    else collect
                    (list :elems (list line nil))))))))
 
 (defun jj--indent-string (s column)
   "Insert STRING into the current buffer, indenting each line to COLUMN."
   (let ((indentation (make-string column ?\s))) ; Create a string of spaces for indentation
-     (mapconcat (lambda (line)
-                         (concat indentation line))
-                       (split-string s "\n")
-                       "\n"))) ; Join lines with newline, prefixed by indentation
+    (mapconcat (lambda (line)
+                 (concat indentation line))
+               (split-string s "\n")
+               "\n"))) ; Join lines with newline, prefixed by indentation
 
 (defun jj-log-insert-logs ()
   "Insert jj log graph into current buffer."
