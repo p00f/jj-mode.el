@@ -175,7 +175,7 @@ if(self.root(),
 (defun jj--run-command (&rest args)
   "Run jj command with ARGS and return output."
   (let ((start-time (current-time))
-        (safe-args (seq-remove #'null args))
+        (safe-args (seq-remove #'null (append args '("--quiet"))))
         result exit-code)
     (jj--debug "Running command: %s %s" jj-executable (string-join safe-args " "))
     (with-temp-buffer
@@ -327,7 +327,7 @@ When ALL-REMOTES is non-nil, include remote bookmarks formatted as NAME@REMOTE."
   (let* ((template (if all-remotes
                        "if(remote, name ++ '@' ++ remote ++ '\n', '')"
                      "name ++ '\n'"))
-         (args (append '("bookmark" "list" "--quiet")
+         (args (append '("bookmark" "list")
                        (and all-remotes '("--all"))
                        (list "-T" template))))
     (delete-dups (split-string (apply #'jj--run-command args) "\n" t))))
@@ -384,26 +384,6 @@ When ALL-REMOTES is non-nil, include remote bookmarks formatted as NAME@REMOTE."
       (when (string-empty-p trimmed-result)
         (message "%s" success-msg))
       t))))
-
-(defun jj--analyze-status-for-hints (status-output)
-  "Analyze jj status output and provide helpful hints."
-  (when (and status-output (not (string-empty-p status-output)))
-    (cond
-     ;; No changes
-     ((string-match-p "The working copy is clean" status-output)
-      (message "Working copy is clean - no changes to commit"))
-
-     ;; Conflicts present
-     ((string-match-p "There are unresolved conflicts" status-output)
-      (message "💡 Resolve conflicts with 'jj resolve' or use diffedit (E/M)"))
-
-     ;; Untracked files
-     ((string-match-p "Untracked paths:" status-output)
-      (message "💡 Add files with 'jj file track' or create .gitignore"))
-
-     ;; Working copy changes
-     ((string-match-p "Working copy changes:" status-output)
-      (message "💡 Commit changes with 'jj commit' or describe with 'jj describe'")))))
 
 (defclass jj-commit-section (magit-section)
   ((commit-id :initarg :commit-id)
@@ -492,9 +472,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
       (magit-insert-section (jj-status-section)
         (magit-insert-heading "Working Copy Status")
         (insert status-output)
-        (insert "\n")
-        ;; Analyze status and provide hints in the minibuffer
-        (jj--analyze-status-for-hints status-output)))))
+        (insert "\n")))))
 
 (defun jj-log-insert-diff ()
   "Insert jj diff with hunks into current buffer."
@@ -1096,7 +1074,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
   "List bookmarks in a temporary buffer.
 With prefix ALL, include remote bookmarks."
   (interactive "P")
-  (let* ((args (append '("bookmark" "list" "--quiet") (and all '("--all"))))
+  (let* ((args (append '("bookmark" "list") (and all '("--all"))))
          (output (apply #'jj--run-command-color args))
          (buf (get-buffer-create "*JJ Bookmarks*")))
     (with-current-buffer buf
