@@ -1237,23 +1237,92 @@ With prefix ALL, include remote bookmarks."
 
 (defun jj-new (arg)
   "Create a new changeset.
-With prefix ARG, prompt for the name/ID of the base changeset from all remotes."
+With prefix ARG, open the transient menu for advanced options."
   (interactive "P")
-  (let* ((base (if arg
-                   (let ((s (completing-read "Create new changeset from (id/bookmark): "
-                                             (jj--get-bookmark-names t) nil nil)))
-                     (when (not (string-empty-p s)) s))
-                 (jj-get-changeset-at-point))))
-    (if (not base)
-        (user-error "Can only run new on a change")
-      (let ((result (jj--run-command "new" "-r" base)))
-        (when (jj--handle-command-result
-               (list "new" "-r" base)
-               result
-               "Created new changeset"
-               "Failed to create new changeset")
-          (jj-log-refresh)
-          (jj-goto-current))))))
+  (if arg
+      (jj-new-transient)
+    (let* ((base (jj-get-changeset-at-point)))
+      (if (not base)
+          (user-error "Can only run new on a change")
+        (let ((result (jj--run-command "new" "-r" base)))
+          (when (jj--handle-command-result
+                 (list "new" "-r" base)
+                 result
+                 "Created new changeset"
+                 "Failed to create new changeset")
+            (jj-log-refresh)
+            (jj-goto-current)))))))
+
+;; New transient menu
+;;;###autoload
+(defun jj-new-transient ()
+  "Transient for jj new operations."
+  (interactive)
+  (jj-new-transient--internal))
+
+(transient-define-prefix jj-new-transient--internal ()
+  "Internal transient for jj new operations."
+  :transient-suffix 'transient--do-exit
+  :transient-non-suffix t
+  [:description "JJ New"
+   :class transient-columns
+   ["Arguments"
+    ("-r" "Parent revision(s)" "--parent=")
+    ("-A" "Insert after" "--insert-after=")
+    ("-B" "Insert before" "--insert-before=")
+    ("-m" "Message" "--message=")
+    ("-n" "No edit" "--no-edit")]
+   ["Actions"
+    ("n" "Create new changeset" jj-new-execute
+     :transient nil)
+    ("q" "Quit" transient-quit-one)]])
+
+;;;###autoload
+(defun jj-new-execute (&optional args)
+  "Execute jj new with ARGS from transient."
+  (interactive (list (transient-args 'jj-new-transient--internal)))
+  (let* ((no-edit? (member "--no-edit" args))
+
+         ;; Extract option arguments
+         (parent-args (seq-filter (lambda (arg) (string-prefix-p "--parent=" arg)) args))
+         (after-args (seq-filter (lambda (arg) (string-prefix-p "--insert-after=" arg)) args))
+         (before-args (seq-filter (lambda (arg) (string-prefix-p "--insert-before=" arg)) args))
+         (message-arg (seq-find (lambda (arg) (string-prefix-p "--message=" arg)) args))
+
+         ;; Build command arguments
+         (cmd-args (append '("new")
+                           (when no-edit? '("--no-edit"))
+                           (when message-arg
+                             (list "-m" (substring message-arg (length "--message="))))
+                           ;; Add --insert-after arguments
+                           (apply #'append (mapcar (lambda (s)
+                                                     (list "--insert-after" (substring s (length "--insert-after="))))
+                                                   after-args))
+                           ;; Add --insert-before arguments
+                           (apply #'append (mapcar (lambda (s)
+                                                     (list "--insert-before" (substring s (length "--insert-before="))))
+                                                   before-args))
+                           ;; Add parent revisions as positional arguments
+                           (apply #'append (mapcar (lambda (s)
+                                                     (list (substring s (length "--parent="))))
+                                                   parent-args))))
+
+         ;; Default to current changeset if no parents/after/before specified
+         (final-cmd-args (if (and (null parent-args) (null after-args) (null before-args))
+                             (let ((commit-id (jj-get-changeset-at-point)))
+                               (if commit-id
+                                   (append cmd-args (list commit-id))
+                                 cmd-args))
+                           cmd-args)))
+
+    (let ((result (apply #'jj--run-command final-cmd-args)))
+      (when (jj--handle-command-result
+             final-cmd-args
+             result
+             "Created new changeset"
+             "Failed to create new changeset")
+        (jj-log-refresh)
+        (jj-goto-current)))))
 
 (defun jj-goto-current ()
   "Jump to the current changeset (@)."
