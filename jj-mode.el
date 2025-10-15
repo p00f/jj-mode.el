@@ -1,4 +1,13 @@
-;;; jj-mode.el -*- lexical-binding: t; -*-
+;;; jj-mode.el --- A jujutsu vcs mode inspired by magit -*- lexical-binding: t; -*-
+
+;; Author: Brandon Olivier
+;; Keywords: jj, vcs, jujutsu, mode
+;; Package-Requires: ((emacs "26.1"))
+;; Homepage: https://github.com/bolivier/jj-mode.el
+
+;; This file is NOT part of GNU Emacs.
+
+;;; Code:
 
 (require 'magit)
 (require 'magit-section)
