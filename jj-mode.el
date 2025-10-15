@@ -1295,25 +1295,79 @@ With prefix ARG, prompt for the name/ID of the base changeset from all remotes."
       (goto-char start-pos)
       (message "Commit %s not found" commit-id))))
 
+(defun jj--get-git-remotes ()
+  "Return a list of Git remote names for the current repository.
+Tries `jj git remote list' first, then falls back to `git remote'."
+  (let* ((out (condition-case _
+                  (jj--run-command "git" "remote" "list")
+                (error "")))
+         (names (if (and out (not (string-empty-p out)))
+                    (let* ((lines (split-string out "\n" t))
+                           (names (mapcar (lambda (l)
+                                            (car (split-string l "[ :\t]" t)))
+                                          lines)))
+                      (delete-dups (copy-sequence names)))
+                  ;; Fallback to plain `git remote`
+                  (with-temp-buffer
+                    (let* ((default-directory (jj--root))
+                           (exit (process-file "git" nil t nil "remote")))
+                      (when (eq exit 0)
+                        (split-string (buffer-string) "\n" t)))))))
+    names))
+
 (defun jj-git-push (args)
   "Push to git remote with ARGS."
-  (interactive (list (transient-args 'jj-git-transient)))
+  (interactive (list (transient-args 'jj-git-push-transient)))
   (let* ((allow-new? (member "--allow-new" args))
          (all? (member "--all" args))
-         (bookmark-arg (seq-find (lambda (arg) (string-prefix-p "--bookmark=" arg)) args))
-         (bookmark (when bookmark-arg (substring bookmark-arg 11)))
+         (tracked? (member "--tracked" args))
+         (deleted? (member "--deleted" args))
+         (allow-empty? (member "--allow-empty-description" args))
+         (allow-private? (member "--allow-private" args))
+         (dry-run? (member "--dry-run" args))
+
+         (remote-arg (seq-find (lambda (arg) (string-prefix-p "--remote=" arg)) args))
+         (remote (when remote-arg (substring remote-arg (length "--remote="))))
+
+         ;; Collect potential multi-value options supplied via --opt=value
+         (bookmark-args (seq-filter (lambda (arg) (string-prefix-p "--bookmark=" arg)) args))
+         (revision-args (seq-filter (lambda (arg) (string-prefix-p "--revisions=" arg)) args))
+         (change-args   (seq-filter (lambda (arg) (string-prefix-p "--change=" arg)) args))
+         (named-args    (seq-filter (lambda (arg) (string-prefix-p "--named=" arg)) args))
 
          (cmd-args (append '("git" "push")
+                           (when remote (list "--remote" remote))
                            (when allow-new? '("--allow-new"))
                            (when all? '("--all"))
-                           (when bookmark (list "--bookmark" bookmark))))
+                           (when tracked? '("--tracked"))
+                           (when deleted? '("--deleted"))
+                           (when allow-empty? '("--allow-empty-description"))
+                           (when allow-private? '("--allow-private"))
+                           (when dry-run? '("--dry-run"))
 
-         (success-msg (if bookmark
-                          (format "Successfully pushed bookmark %s" bookmark)
-                        "Successfully pushed to remote")))
+                           ;; Expand = style into separate args as jj accepts space-separated
+                           (apply #'append (mapcar (lambda (s)
+                                                     (list "--bookmark" (substring s (length "--bookmark="))))
+                                                   bookmark-args))
+                           (apply #'append (mapcar (lambda (s)
+                                                     (list "--revisions" (substring s (length "--revisions="))))
+                                                   revision-args))
+                           (apply #'append (mapcar (lambda (s)
+                                                     (list "--change" (substring s (length "--change="))))
+                                                   change-args))
+                           (apply #'append (mapcar (lambda (s)
+                                                     (list "--named" (substring s (length "--named="))))
+                                                   named-args))))
+
+         (success-msg (cond
+                       ((and bookmark-args (= (length bookmark-args) 1))
+                        (format "Successfully pushed bookmark %s"
+                                (substring (car bookmark-args) (length "--bookmark="))))
+                       (bookmark-args "Successfully pushed selected bookmarks")
+                       (t "Successfully pushed to remote"))))
     (let ((result (apply #'jj--run-command cmd-args)))
-      (if (jj--handle-push-result cmd-args result success-msg)
-          (jj-log-refresh)))))
+      (when (jj--handle-push-result cmd-args result success-msg)
+        (jj-log-refresh)))))
 
 (defun jj-commit ()
   "Open commit message buffer."
@@ -1403,12 +1457,27 @@ With prefix ARG, prompt for the name/ID of the base changeset from all remotes."
               (jj-log-refresh))))
     (jj--message-with-log "No commit ID available for description update")))
 
-(defun jj-git-fetch ()
-  "Fetch from git remote."
-  (interactive)
+(defun jj-git-fetch (args)
+  "Fetch from git remote with ARGS from transient."
+  (interactive (list (transient-args 'jj-git-fetch-transient)))
   (jj--message-with-log "Fetching from remote...")
-  (let ((result (jj--run-command "git" "fetch")))
-    (if (jj--handle-command-result (list "git" "fetch") result
+  (let* ((tracked? (member "--tracked" args))
+         (all-remotes? (member "--all-remotes" args))
+
+         (branch-args (seq-filter (lambda (arg) (string-prefix-p "--branch=" arg)) args))
+         (remote-args (seq-filter (lambda (arg) (string-prefix-p "--remote=" arg)) args))
+
+         (cmd-args (append '("git" "fetch")
+                           (when tracked? '("--tracked"))
+                           (when all-remotes? '("--all-remotes"))
+                           (apply #'append (mapcar (lambda (s)
+                                                     (list "--branch" (substring s (length "--branch="))))
+                                                   branch-args))
+                           (apply #'append (mapcar (lambda (s)
+                                                     (list "--remote" (substring s (length "--remote="))))
+                                                   remote-args))))
+         (result (apply #'jj--run-command cmd-args)))
+    (if (jj--handle-command-result cmd-args result
                                    "Fetched from remote" "Fetch failed")
         (jj-log-refresh))))
 
@@ -1633,21 +1702,48 @@ With prefix ARG, prompt for the name/ID of the base changeset from all remotes."
 
     ("q" "Quit" transient-quit-one)]])
 
+;; Git transients
 (transient-define-prefix jj-git-transient ()
-  "Transient for jj git operations."
+  "Top-level transient for jj git operations."
   :transient-suffix 'transient--do-exit
   :transient-non-suffix t
-  ["Arguments"
-   ("-n" "Allow new bookmarks" "--allow-new")
-   ("-b" "Bookmark" "--bookmark="
-    :choices jj--get-bookmark-names)
-   ("-a" "All" "--all")]
-  [:description "JJ Git Operations"
+  [:description "JJ Git"
    :class transient-columns
-   [("p" "Push" jj-git-push
-     :transient nil)
-    ("f" "Fetch" jj-git-fetch
-     :transient nil)]
+   ["Sync"
+    ("p" "Push" jj-git-push-transient)
+    ("f" "Fetch" jj-git-fetch-transient)]
    [("q" "Quit" transient-quit-one)]])
+
+;; Push transient and command
+(transient-define-prefix jj-git-push-transient ()
+  "Transient for jj git push."
+  [:class transient-columns
+          ["Arguments"
+           ("-R" "Remote" "--remote=" :choices jj--get-git-remotes)
+           ("-b" "Bookmark" "--bookmark=" :choices jj--get-bookmark-names)
+           ("-a" "All bookmarks" "--all")
+           ("-t" "Tracked only" "--tracked")
+           ("-D" "Deleted" "--deleted")
+           ("-n" "Allow new" "--allow-new")
+           ("-E" "Allow empty desc" "--allow-empty-description")
+           ("-P" "Allow private" "--allow-private")
+           ("-r" "Revisions" "--revisions=")
+           ("-c" "Change" "--change=")
+           ("-N" "Named X=REV" "--named=")
+           ("-y" "Dry run" "--dry-run")]
+          [("p" "Push" jj-git-push :transient nil)
+           ("q" "Quit" transient-quit-one)]])
+
+;; Fetch transient and command
+(transient-define-prefix jj-git-fetch-transient ()
+  "Transient for jj git fetch."
+  [:class transient-columns
+          ["Arguments"
+           ("-R" "Remote" "--remote=" :choices jj--get-git-remotes)
+           ("-B" "Branch" "--branch=")
+           ("-t" "Tracked only" "--tracked")
+           ("-A" "All remotes" "--all-remotes")]
+          [("f" "Fetch" jj-git-fetch :transient nil)
+           ("q" "Quit" transient-quit-one)]])
 
 (provide 'jj-mode)
