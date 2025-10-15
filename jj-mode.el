@@ -1,4 +1,13 @@
-;;; jj-mode.el -*- lexical-binding: t; -*-
+;;; jj-mode.el --- A jujutsu vcs mode inspired by magit -*- lexical-binding: t; -*-
+
+;; Author: Brandon Olivier
+;; Keywords: jj, vcs, jujutsu, mode
+;; Package-Requires: ((emacs "26.1"))
+;; Homepage: https://github.com/bolivier/jj-mode.el
+
+;; This file is NOT part of GNU Emacs.
+
+;;; Code:
 
 (require 'magit)
 (require 'magit-section)
@@ -1065,9 +1074,13 @@ The results of this fn are fed into `jj--parse-log-entries'."
          (choice (and names (completing-read "Delete bookmark (propagates on push): " names nil t))))
     (if (not choice)
         (message "No bookmarks found")
-      (jj--run-command "bookmark" "delete" choice)
-      (jj-log-refresh)
-      (message "Deleted bookmark '%s'" choice))))
+      (when (yes-or-no-p (format "Delete bookmark '%s' (propagates on push)? " choice))
+        (let ((default-directory (jj--root)))
+          (let ((result (jj--run-command "bookmark" "delete" choice)))
+            (when (jj--handle-command-result (list "bookmark" "delete" choice) result
+                                             (format "Deleted bookmark '%s'" choice)
+                                             "Failed to delete bookmark")
+              (jj-log-refresh))))))))
 
 (defun jj-bookmark-forget ()
   "Forget a bookmark (no propagation)."
@@ -1076,9 +1089,13 @@ The results of this fn are fed into `jj--parse-log-entries'."
          (choice (and names (completing-read "Forget bookmark: " names nil t))))
     (if (not choice)
         (message "No bookmarks found")
-      (jj--run-command "bookmark" "forget" choice)
-      (jj-log-refresh)
-      (message "Forgot bookmark '%s'" choice))))
+      (when (yes-or-no-p (format "Forget bookmark '%s' locally)? " choice))
+        (let ((default-directory (jj--root)))
+          (let ((result (jj--run-command "bookmark" "forget" choice)))
+            (when (jj--handle-command-result (list "bookmark" "forget" choice) result
+                                             (format "Forgot bookmark '%s'" choice)
+                                             "Failed to forget bookmark")
+              (jj-log-refresh))))))))
 
 (defun jj-bookmark-track ()
   "Track remote bookmark(s)."
@@ -1087,9 +1104,12 @@ The results of this fn are fed into `jj--parse-log-entries'."
          (choice (and remote-bookmarks (completing-read "Track remote bookmark: " remote-bookmarks nil t))))
     (if (not choice)
         (message "No remote bookmarks found")
-      (jj--run-command "bookmark" "track" choice)
-      (jj-log-refresh)
-      (message "Tracking bookmark '%s'" choice))))
+      (let ((default-directory (jj--root)))
+        (let ((result (jj--run-command "bookmark" "track" choice)))
+          (when (jj--handle-command-result (list "bookmark" "track" choice) result
+                                           (format "Tracking bookmark '%s'" choice)
+                                           "Failed to track bookmark")
+            (jj-log-refresh)))))))
 
 ;;;###autoload
 (defun jj-bookmark-list (&optional all)
@@ -1127,13 +1147,17 @@ With prefix ALL, include remote bookmarks."
   "Rename bookmark OLD to NEW."
   (interactive
    (let* ((existing (jj--get-bookmark-names))
+          (_ (when (null existing) (user-error "No bookmarks found")))
           (old (completing-read "Rename bookmark: " existing nil t))
           (new (read-string (format "New name for %s: " old))))
      (list old new)))
   (when (and (not (string-empty-p old)) (not (string-empty-p new)))
-    (jj--run-command "bookmark" "rename" old new)
-    (jj-log-refresh)
-    (message "Renamed bookmark '%s' -> '%s'" old new)))
+    (let ((default-directory (jj--root)))
+      (let ((result (jj--run-command "bookmark" "rename" old new)))
+        (when (jj--handle-command-result (list "bookmark" "rename" old new) result
+                                         (format "Renamed bookmark '%s' -> '%s'" old new)
+                                         "Failed to rename bookmark")
+          (jj-log-refresh))))))
 
 ;;;###autoload
 (defun jj-bookmark-set (name commit)
@@ -1144,9 +1168,12 @@ With prefix ALL, include remote bookmarks."
           (at (or (jj-get-changeset-at-point) "@"))
           (rev (read-string (format "Target revision (default %s): " at) nil nil at)))
      (list name rev)))
-  (jj--run-command "bookmark" "set" name "-r" commit)
-  (jj-log-refresh)
-  (message "Set bookmark '%s' to %s" name commit))
+  (let ((default-directory (jj--root)))
+    (let ((result (jj--run-command "bookmark" "set" name "-r" commit)))
+      (when (jj--handle-command-result (list "bookmark" "set" name "-r" commit) result
+                                       (format "Set bookmark '%s' to %s" name commit)
+                                       "Failed to set bookmark")
+        (jj-log-refresh)))))
 
 ;;;###autoload
 (defun jj-bookmark-untrack (names)
@@ -1157,9 +1184,14 @@ With prefix ALL, include remote bookmarks."
           (names (completing-read-multiple "Untrack remote bookmark(s): " remote-names nil t)))
      (list names)))
   (when names
-    (apply #'jj--run-command (append '("bookmark" "untrack") names))
-    (jj-log-refresh)
-    (message "Untracked: %s" (string-join names ", "))))
+    (let ((default-directory (jj--root)))
+      (let* ((cmd (append '("bookmark" "untrack") names))
+             (result (apply #'jj--run-command cmd)))
+        (when (jj--handle-command-result cmd result
+                                         (format "Untracked: %s" (string-join names ", "))
+                                         "Failed to untrack")
+          (jj-log-refresh))))))
+
 
 (defun jj-tug ()
   "Run jj tug command."
